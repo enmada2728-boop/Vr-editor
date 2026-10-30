@@ -82,6 +82,7 @@ function App() {
 
   const videoRef = useRef(null);
   const audioCtxRef = useRef(null);
+  const videoSourceRef = useRef(null); // Fixed: Store the audio source here
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
@@ -116,16 +117,12 @@ function App() {
     } catch (err) { alert("Failed to load font. Make sure it is a .ttf or .otf file."); }
   };
 
-  // --- WIKI SCRAPER ---
   const scrapeWikiContext = async (game) => {
     try {
       setAgentStatus("Scraping game wiki for mechanics...");
-      // Format name for Fandom URL (e.g., "Blade and Sorcery" -> "blade-and-sorcery.fandom.com")
       const formattedName = game.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
       const wikiTitle = game.replace(/\s+/g, '_');
       const targetUrl = `https://${formattedName}.fandom.com/wiki/${wikiTitle}`;
-      
-      // Use a free CORS proxy to bypass browser restrictions
       const corsProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
       
       const response = await fetch(corsProxy);
@@ -136,7 +133,6 @@ function App() {
       const parser = new DOMParser();
       const doc = parser.parseFromString(data.contents, "text/html");
       
-      // Extract main paragraphs from the wiki page
       const paragraphs = Array.from(doc.querySelectorAll('.mw-parser-output p'))
         .slice(0, 5)
         .map(p => p.textContent)
@@ -144,12 +140,10 @@ function App() {
         
       return paragraphs.substring(0, 2000) || "Wiki text was empty.";
     } catch (err) {
-      console.log("Scraping failed:", err);
-      return "Wiki scraping failed. Rely on general knowledge.";
+      return "Wiki scraping failed.";
     }
   };
 
-  // --- GAME INTEL RESEARCH AGENT (With Scraping) ---
   const researchGameStyle = async () => {
     if (!geminiKey || !ytKey || !transcriptKey) { alert("Add all 3 API keys in Settings."); return; }
     if (!gameName) { alert("Enter game name."); return; }
@@ -158,10 +152,8 @@ function App() {
     let videoData = "";
 
     try {
-      // 1. Scrape Wiki Data
       const wikiContext = await scrapeWikiContext(gameName);
 
-      // 2. Fetch YouTube Data
       setAgentStatus("Searching YouTube for viral Shorts...");
       const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(gameName + ' VR shorts')}&type=video&order=viewCount&maxResults=3&key=${ytKey}`;
       const searchRes = await fetch(searchUrl);
@@ -177,11 +169,8 @@ function App() {
           } catch (e) { /* Ignore */ }
           videoData += `VIDEO: "${item.snippet.title}"\nTRANSCRIPT: "${transcriptText}"\n\n`;
         }
-      } else {
-        videoData = "No recent YouTube videos found.";
       }
 
-      // 3. Send Combined Data to Gemini
       setAgentStatus("Analyzing data with Gemini...");
       const prompt = `You are a viral YouTube Shorts editor. I am editing "${gameName}".
       
@@ -215,10 +204,9 @@ function App() {
       setCaptionColor(result.color);
       setIntensity(result.intensity);
       setCustomCaptions(result.captions);
-      alert(`Research Complete! The viral style and mechanics for ${gameName} have been applied.`);
+      alert(`Research Complete! Applied style for ${gameName}.`);
     } catch (err) {
-      console.error(err);
-      alert("Research failed. Check API limits or the game name spelling.");
+      alert("Research failed. Check API limits.");
     } finally {
       setAgentStatus('');
       setIsResearching(false);
@@ -257,11 +245,17 @@ function App() {
     const video = videoRef.current;
     video.muted = false; video.currentTime = 0;
     
+    // FIX: Reuse AudioContext and Source Node
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     const audioCtx = audioCtxRef.current;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     
-    const source = audioCtx.createMediaElementSource(video);
+    if (!videoSourceRef.current) {
+      videoSourceRef.current = audioCtx.createMediaElementSource(video);
+    }
+    const source = videoSourceRef.current;
+    source.disconnect(); // Disconnect from any previous renders
+    
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     source.connect(analyser);
@@ -322,176 +316,199 @@ function App() {
     if (!videoRef.current) return;
     setIsRendering(true); setRenderProgress(0);
     
-    const video = videoRef.current;
-    const canvas = document.getElementById('renderCanvas');
-    const ctx = canvas.getContext('2d');
-    
-    if (ratio === '9:16') { canvas.width = 1080; canvas.height = 1920; }
-    else { canvas.width = 1920; canvas.height = 1080; }
+    try {
+      const video = videoRef.current;
+      const canvas = document.getElementById('renderCanvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Lower resolution slightly for Android stability
+      if (ratio === '9:16') { canvas.width = 720; canvas.height = 1280; }
+      else { canvas.width = 1280; canvas.height = 720; }
 
-    await document.fonts.ready;
+      await document.fonts.ready;
 
-    const stream = canvas.captureStream(30);
-    const audioCtx = audioCtxRef.current;
-    
-    // AUDIO GRAPH
-    const gameSource = audioCtx.createMediaElementSource(video);
-    const gameGain = audioCtx.createGain();
-    const analyser = audioCtx.createAnalyser();
-    gameSource.connect(analyser);
-    gameSource.connect(gameGain);
-    gameGain.connect(audioCtx.destination);
+      const stream = canvas.captureStream(30);
+      const audioCtx = audioCtxRef.current;
+      
+      const dest = audioCtx.createMediaStreamDestination();
+      
+      // FIX: Reuse the source node!
+      let source = videoSourceRef.current;
+      if (!source) {
+         source = audioCtx.createMediaElementSource(video);
+         videoSourceRef.current = source;
+      }
+      source.disconnect(); // Clear old connections
+      source.connect(dest);
+      source.connect(audioCtx.destination);
 
-    const dest = audioCtx.createMediaStreamDestination();
-    gameGain.connect(dest);
+      let musicSource = null, musicAudio = null, musicGain = null;
+      if (musicUrl) {
+        musicAudio = new Audio(musicUrl); musicAudio.loop = true;
+        musicSource = audioCtx.createMediaElementSource(musicAudio);
+        musicGain = audioCtx.createGain();
+        musicGain.gain.value = musicVolume;
+        musicSource.connect(musicGain);
+        musicGain.connect(dest);
+        musicGain.connect(audioCtx.destination);
+        musicAudio.play();
+      }
+      
+      dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-    let musicSource = null, musicAudio = null, musicGain = null;
-    if (musicUrl) {
-      musicAudio = new Audio(musicUrl); musicAudio.loop = true;
-      musicSource = audioCtx.createMediaElementSource(musicAudio);
-      musicGain = audioCtx.createGain();
-      musicGain.gain.value = musicVolume;
-      musicSource.connect(musicGain);
-      musicGain.connect(dest);
-      musicGain.connect(audioCtx.destination);
-      musicAudio.play();
-    }
-    
-    dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
-
-    // LIVE CAPTIONS
-    let recognition = null;
-    if (window.SpeechRecognition || window.webkitSpeechRecognition) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.onresult = (event) => {
-        let current = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          current += event.results[i][0].transcript;
+      // Live Captions (with safety net)
+      let recognition = null;
+      try {
+        if (window.SpeechRecognition || window.webkitSpeechRecognition) {
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          recognition = new SpeechRecognition();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.onresult = (event) => {
+            let current = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+              current += event.results[i][0].transcript;
+            }
+            setLiveCaption(current);
+          };
+          recognition.start();
         }
-        setLiveCaption(current);
+      } catch (e) { console.warn("Speech Recognition blocked"); }
+
+      // MIME Type fallback for Android
+      let options = { mimeType: 'video/webm;codecs=vp9,opus' };
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        options = { mimeType: 'video/webm;codecs=vp8,opus' };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options = { mimeType: 'video/webm' };
+        }
+      }
+
+      const recorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = recorder;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        if (musicAudio) musicAudio.pause();
+        if (recognition) recognition.stop();
+        const blob = new Blob(chunksRef.current, { type: options.mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; a.click();
+        setIsRendering(false); setRenderProgress(100);
       };
-      recognition.start();
+
+      video.currentTime = 0;
+      video.play();
+      recorder.start();
+
+      let lastHighlightTime = -10;
+      let shakeFrames = 0;
+      let flashFrames = 0;
+
+      const renderLoop = () => {
+        if (video.paused || video.ended) { 
+          recorder.stop(); 
+          return; 
+        }
+
+        const time = video.currentTime;
+        
+        // Audio Ducking
+        if (audioDucking && musicGain) {
+          const analyser = audioCtx.createAnalyser();
+          source.connect(analyser);
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          musicGain.gain.value = (sum / dataArray.length) > 50 ? 0.05 : musicVolume;
+          source.disconnect(analyser);
+        }
+
+        const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
+        const newHighlight = isHighlight && (time - lastHighlightTime > 2);
+        
+        if (newHighlight) {
+          lastHighlightTime = time;
+          if (impactEffects) { shakeFrames = 15; flashFrames = 5; }
+          if (memeSFX) {
+             const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+             osc.type = 'sine'; osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+             osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.3);
+             gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+             gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+             osc.connect(gain); gain.connect(dest); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+          }
+        }
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        
+        if (shakeFrames > 0) {
+          ctx.translate((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30);
+          shakeFrames--;
+        }
+
+        if (beatSync && musicUrl) {
+          const beatScale = 1 + Math.abs(Math.sin(time * Math.PI)) * 0.03;
+          ctx.translate(canvas.width/2, canvas.height/2); ctx.scale(beatScale, beatScale); ctx.translate(-canvas.width/2, -canvas.height/2);
+        }
+
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        if (isHighlight) {
+          let zoom = 1.08 + Math.sin(time * 10) * 0.05;
+          if (intensity === 'extreme') zoom = 1.15 + Math.sin(time * 10) * 0.05;
+          
+          ctx.translate(canvas.width / 2, canvas.height / 2); ctx.scale(zoom, zoom); ctx.translate(-canvas.width / 2, -canvas.height / 2);
+
+          ctx.fillStyle = captionColor;
+          ctx.fillRect(canvas.width * 0.05, canvas.height * 0.8, canvas.width * 0.9, 100);
+          
+          ctx.fillStyle = 'white';
+          ctx.font = customFontName ? `70px "${customFontName}"` : `bold 60px ${font}`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          
+          let displayCaption = liveCaption ? liveCaption.toUpperCase() : customCaptions[0];
+          ctx.save();
+          let textX = canvas.width / 2; let textY = canvas.height * 0.8 + 50;
+
+          if (textAnimation === 'bounce') textY -= Math.abs(Math.sin(time * 15)) * 20;
+          else if (textAnimation === 'shake') { textX += (Math.random() - 0.5) * 15; textY += (Math.random() - 0.5) * 15; }
+
+          ctx.fillText(displayCaption.substring(0, 20), textX, textY);
+          ctx.restore();
+        }
+
+        if (flashFrames > 0) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${flashFrames * 0.15})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          flashFrames--;
+        }
+
+        if (showSafeZone && ratio === '9:16') {
+          ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.lineWidth = 4; ctx.setLineDash([20, 20]);
+          ctx.strokeRect(40, 150, canvas.width - 80, canvas.height - 400);
+          ctx.setLineDash([]);
+        }
+
+        if (intensity !== 'low') {
+          const currentDead = deadSpace.find(d => time >= d.start && time <= d.end);
+          if (currentDead) {
+             video.currentTime = currentDead.end; // Skip the boring part!
+          }
+          else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
+        }
+
+        setRenderProgress((video.currentTime / video.duration) * 100);
+        requestAnimationFrame(renderLoop);
+      };
+      renderLoop();
+      
+    } catch (error) {
+      console.error(error);
+      alert("Render Error: " + error.message + "\nYour phone might be out of memory. Try a shorter video.");
+      setIsRendering(false);
     }
-
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
-    mediaRecorderRef.current = recorder;
-    chunksRef.current = [];
-
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-    recorder.onstop = () => {
-      if (musicAudio) musicAudio.pause();
-      if (recognition) recognition.stop();
-      const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; a.click();
-      setIsRendering(false); setRenderProgress(100);
-    };
-
-    video.currentTime = 0;
-    video.play();
-    recorder.start();
-
-    let lastHighlightTime = -10;
-    let shakeFrames = 0;
-    let flashFrames = 0;
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-    const renderLoop = () => {
-      if (video.paused || video.ended) { recorder.stop(); return; }
-
-      const time = video.currentTime;
-      
-      if (audioDucking && musicGain) {
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        const vol = sum / dataArray.length;
-        musicGain.gain.value = vol > 50 ? 0.05 : musicVolume;
-      }
-
-      const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
-      const newHighlight = isHighlight && (time - lastHighlightTime > 2);
-      if (newHighlight) {
-        lastHighlightTime = time;
-        if (impactEffects) { shakeFrames = 15; flashFrames = 5; }
-        if (memeSFX) {
-           const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
-           osc.type = 'sine'; osc.frequency.setValueAtTime(150, audioCtx.currentTime);
-           osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.3);
-           gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-           gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
-           osc.connect(gain); gain.connect(dest); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
-        }
-      }
-
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      
-      if (shakeFrames > 0) {
-        ctx.translate((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30);
-        shakeFrames--;
-      }
-
-      if (beatSync && musicUrl) {
-        const beatScale = 1 + Math.abs(Math.sin(time * Math.PI)) * 0.03;
-        ctx.translate(canvas.width/2, canvas.height/2); ctx.scale(beatScale, beatScale); ctx.translate(-canvas.width/2, -canvas.height/2);
-      }
-
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      if (isHighlight) {
-        let zoom = 1.08 + Math.sin(time * 10) * 0.05;
-        if (intensity === 'extreme') zoom = 1.15 + Math.sin(time * 10) * 0.05;
-        
-        ctx.translate(canvas.width / 2, canvas.height / 2); ctx.scale(zoom, zoom); ctx.translate(-canvas.width / 2, -canvas.height / 2);
-
-        ctx.fillStyle = captionColor;
-        ctx.fillRect(canvas.width * 0.05, canvas.height * 0.8, canvas.width * 0.9, 140);
-        
-        ctx.fillStyle = 'white';
-        ctx.font = customFontName ? `90px "${customFontName}"` : `bold 80px ${font}`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        
-        let displayCaption = liveCaption ? liveCaption.toUpperCase() : customCaptions[0];
-        ctx.save();
-        let textX = canvas.width / 2; let textY = canvas.height * 0.8 + 70;
-
-        if (textAnimation === 'bounce') textY -= Math.abs(Math.sin(time * 15)) * 30;
-        else if (textAnimation === 'shake') { textX += (Math.random() - 0.5) * 20; textY += (Math.random() - 0.5) * 20; }
-        else if (textAnimation === 'pulse') {
-          const scale = 1 + Math.sin(time * 20) * 0.1;
-          ctx.translate(textX, textY); ctx.scale(scale, scale); textX = 0; textY = 0;
-        }
-
-        ctx.fillText(displayCaption.substring(0, 20), textX, textY);
-        ctx.restore();
-      }
-
-      if (flashFrames > 0) {
-        ctx.fillStyle = `rgba(255, 255, 255, ${flashFrames * 0.15})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        flashFrames--;
-      }
-
-      if (showSafeZone && ratio === '9:16') {
-        ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.lineWidth = 4; ctx.setLineDash([20, 20]);
-        ctx.strokeRect(50, 200, canvas.width - 100, canvas.height - 500);
-        ctx.font = '30px Inter'; ctx.fillStyle = 'rgba(255,0,0,0.7)'; ctx.textAlign = 'center';
-        ctx.fillText('SOCIAL UI SAFE ZONE', canvas.width/2, 180);
-        ctx.setLineDash([]);
-      }
-
-      if (intensity !== 'low') {
-        const isDeadSpace = deadSpace.some(d => time >= d.start && time <= d.end);
-        if (isDeadSpace) video.currentTime += 1.0;
-        else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
-      }
-
-      setRenderProgress((video.currentTime / video.duration) * 100);
-      requestAnimationFrame(renderLoop);
-    };
-    renderLoop();
   };
 
   return (
@@ -534,10 +551,8 @@ function App() {
 
         {activeTab === 'editor' && (
           <div className="space-y-4">
-            
             <div className="glass p-5 rounded-3xl space-y-4 border border-purple-500/30">
               <h3 className="font-bold text-sm uppercase tracking-wider text-purple-400">🧠 Real Game Intel Agent</h3>
-              <p className="text-xs text-gray-400">Scrapes the wiki for mechanics + YouTube for viral trends.</p>
               <div className="flex gap-2">
                 <input type="text" placeholder="e.g. Blade & Sorcery" value={gameName} onChange={(e) => setGameName(e.target.value)} className="flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
                 <button onClick={researchGameStyle} disabled={isResearching} className="neon-btn px-4 py-3 rounded-xl font-bold text-sm">
@@ -551,10 +566,6 @@ function App() {
             <div className="glass p-5 rounded-3xl">
               <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline Map</h3>
               <canvas id="timelineCanvas" className="w-full h-[100px] rounded-lg" />
-              <div className="flex gap-3 text-xs font-mono mt-2">
-                <span className="flex items-center gap-1"><div className="w-3 h-3 bg-purple-500 rounded-sm"></div> Action</span>
-                <span className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500/50 rounded-sm"></div> Dead Space</span>
-              </div>
             </div>
 
             <div className="glass p-5 rounded-3xl space-y-2">
