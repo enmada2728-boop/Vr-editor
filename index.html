@@ -16,14 +16,20 @@
   .neon-text { background: linear-gradient(135deg, #8b5cf6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; }
   .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
-  .timeline-track { background: #121215; border: 1px solid #27272a; position: relative; height: 60px; border-radius: 8px; overflow: hidden; }
-  .timeline-highlight { background: rgba(139, 92, 246, 0.4); border: 1px solid #8b5cf6; position: absolute; top: 0; bottom: 0; }
+  .timeline-container { background: #121215; border: 1px solid #27272a; border-radius: 8px; overflow: hidden; position: relative; }
+  .toggle-checkbox { display: none; }
+  .toggle-label { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 10px 0; border-bottom: 1px solid #27272a; font-size: 14px; font-weight: 600; }
+  .toggle-switch { position: relative; width: 44px; height: 24px; background: #3f3f46; border-radius: 12px; transition: 0.3s; }
+  .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: 0.3s; }
+  .toggle-checkbox:checked + .toggle-switch { background: #8b5cf6; }
+  .toggle-checkbox:checked + .toggle-switch::after { transform: translateX(20px); }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <canvas id="motionCanvas" width="64" height="64" class="hidden"></canvas>
 <canvas id="renderCanvas" class="hidden"></canvas>
+<canvas id="timelineCanvas" width="1000" height="100"></canvas>
 
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
@@ -35,20 +41,37 @@ function App() {
   const [videoDuration, setVideoDuration] = useState(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
-  const [highlights, setHighlights] = useState([]);
   
-  // Settings State
+  // Analysis Data
+  const [highlights, setHighlights] = useState([]);
+  const [deadSpace, setDeadSpace] = useState([]);
+  const [waveform, setWaveform] = useState([]);
+  
+  // Pro Settings
   const [ratio, setRatio] = useState('9:16');
   const [intensity, setIntensity] = useState('medium');
-  const [style, setStyle] = useState('gaming');
   const [font, setFont] = useState('Montserrat');
   const [captionColor, setCaptionColor] = useState('#8b5cf6');
+  const [textAnimation, setTextAnimation] = useState('bounce');
   
-  // API Keys & AI Research State
+  // Top-Tier Toggles
+  const [showSafeZone, setShowSafeZone] = useState(true);
+  const [audioDucking, setAudioDucking] = useState(true);
+  const [impactEffects, setImpactEffects] = useState(true);
+  const [memeSFX, setMemeSFX] = useState(true);
+  const [beatSync, setBeatSync] = useState(true);
+  
+  // Custom Assets
+  const [customFontName, setCustomFontName] = useState('');
+  const [musicUrl, setMusicUrl] = useState(null);
+  const [musicVolume, setMusicVolume] = useState(0.3);
+  
+  // Live Transcription & AI Agent
+  const [liveCaption, setLiveCaption] = useState('');
+  const [agentStatus, setAgentStatus] = useState('');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
   const [ytKey, setYtKey] = useState(localStorage.getItem('vr_editor_yt') || '');
   const [transcriptKey, setTranscriptKey] = useState(localStorage.getItem('vr_editor_transcript') || '');
-  
   const [gameName, setGameName] = useState('');
   const [isResearching, setIsResearching] = useState(false);
   const [customCaptions, setCustomCaptions] = useState(["EPIC MOMENT", "NO WAY", "CLUTCH"]);
@@ -74,67 +97,108 @@ function App() {
     if (file) {
       setVideoFile(file);
       setVideoUrl(URL.createObjectURL(file));
-      setHighlights([]);
+      setHighlights([]); setDeadSpace([]); setWaveform([]);
       setAnalyzeProgress(0);
       setActiveTab('analyze');
     }
   };
 
-  const handleVideoLoaded = () => {
-    if (videoRef.current) setVideoDuration(videoRef.current.duration);
+  const handleFontUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const url = URL.createObjectURL(file);
+      const loadedFont = new FontFace('UserCustomFont', `url(${url})`);
+      await loadedFont.load();
+      document.fonts.add(loadedFont);
+      setCustomFontName('UserCustomFont');
+      alert("Custom font loaded!");
+    } catch (err) { alert("Failed to load font. Make sure it is a .ttf or .otf file."); }
   };
 
-  // --- REAL GAME INTEL RESEARCH AGENT (With YouTube & Transcripts) ---
-  const researchGameStyle = async () => {
-    if (!geminiKey || !ytKey || !transcriptKey) { 
-      alert("Please add all 3 API keys in Settings first."); 
-      return; 
+  // --- WIKI SCRAPER ---
+  const scrapeWikiContext = async (game) => {
+    try {
+      setAgentStatus("Scraping game wiki for mechanics...");
+      // Format name for Fandom URL (e.g., "Blade and Sorcery" -> "blade-and-sorcery.fandom.com")
+      const formattedName = game.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+      const wikiTitle = game.replace(/\s+/g, '_');
+      const targetUrl = `https://${formattedName}.fandom.com/wiki/${wikiTitle}`;
+      
+      // Use a free CORS proxy to bypass browser restrictions
+      const corsProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+      
+      const response = await fetch(corsProxy);
+      const data = await response.json();
+      
+      if (!data.contents) return "No wiki data found.";
+      
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(data.contents, "text/html");
+      
+      // Extract main paragraphs from the wiki page
+      const paragraphs = Array.from(doc.querySelectorAll('.mw-parser-output p'))
+        .slice(0, 5)
+        .map(p => p.textContent)
+        .join(' ');
+        
+      return paragraphs.substring(0, 2000) || "Wiki text was empty.";
+    } catch (err) {
+      console.log("Scraping failed:", err);
+      return "Wiki scraping failed. Rely on general knowledge.";
     }
-    if (!gameName) { alert("Please enter the game name."); return; }
+  };
+
+  // --- GAME INTEL RESEARCH AGENT (With Scraping) ---
+  const researchGameStyle = async () => {
+    if (!geminiKey || !ytKey || !transcriptKey) { alert("Add all 3 API keys in Settings."); return; }
+    if (!gameName) { alert("Enter game name."); return; }
     
     setIsResearching(true);
     let videoData = "";
 
     try {
-      // Step 1: Search YouTube for the game's top recent Shorts
+      // 1. Scrape Wiki Data
+      const wikiContext = await scrapeWikiContext(gameName);
+
+      // 2. Fetch YouTube Data
+      setAgentStatus("Searching YouTube for viral Shorts...");
       const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(gameName + ' VR shorts')}&type=video&order=viewCount&maxResults=3&key=${ytKey}`;
       const searchRes = await fetch(searchUrl);
       const searchData = await searchRes.json();
       
       if (searchData.items && searchData.items.length > 0) {
         for (const item of searchData.items) {
-          const vid = item.id.videoId;
-          const title = item.snippet.title;
-          
-          // Step 2: Fetch transcript for each video
+          setAgentStatus("Reading YouTube transcripts...");
           let transcriptText = "Transcript unavailable.";
           try {
-            const trRes = await fetch(`https://youtube-transcript.ai/transcript/${vid}.txt?key=${transcriptKey}`);
-            if (trRes.ok) {
-              transcriptText = await trRes.text();
-              // Truncate to save tokens (first 1500 chars)
-              transcriptText = transcriptText.substring(0, 1500);
-            }
-          } catch (e) { /* Ignore transcript errors */ }
-          
-          videoData += `VIDEO: "${title}"\nTRANSCRIPT: "${transcriptText}"\n\n`;
+            const trRes = await fetch(`https://youtube-transcript.ai/transcript/${item.id.videoId}.txt?key=${transcriptKey}`);
+            if (trRes.ok) transcriptText = (await trRes.text()).substring(0, 1500);
+          } catch (e) { /* Ignore */ }
+          videoData += `VIDEO: "${item.snippet.title}"\nTRANSCRIPT: "${transcriptText}"\n\n`;
         }
       } else {
-        videoData = "No recent YouTube videos found for this game. Rely on general viral knowledge.";
+        videoData = "No recent YouTube videos found.";
       }
 
-      // Step 3: Send real data to Gemini
-      const prompt = `You are a viral YouTube Shorts editor. I am editing gameplay from "${gameName}".
-      Here is the REAL data from the currently most popular videos for this game:
+      // 3. Send Combined Data to Gemini
+      setAgentStatus("Analyzing data with Gemini...");
+      const prompt = `You are a viral YouTube Shorts editor. I am editing "${gameName}".
+      
+      Here is the actual lore and mechanics of the game from the Wiki:
+      ${wikiContext}
+      
+      Here is what the top creators are saying in their viral videos:
       ${videoData}
       
-      Based on what these creators are actually saying and doing in their viral videos, what editing style should I use?
-      Respond ONLY with a valid JSON object (no markdown, no backticks) matching this structure:
+      Based on BOTH the actual game mechanics and the viral video trends, what editing style and specific comedic captions should I use?
+      
+      Respond ONLY with a valid JSON object (no markdown, no backticks):
       {
         "font": "Bangers" or "Montserrat" or "Inter",
-        "color": "A hex color code like #ff0000 or #ffff00",
+        "color": "#ff0000",
         "intensity": "low" or "medium" or "extreme",
-        "captions": ["3 viral funny/exciting words extracted from their style to use as pop-up text"]
+        "captions": ["3 viral words based on the game's mechanics"]
       }`;
 
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
@@ -144,33 +208,54 @@ function App() {
       });
       
       const data = await res.json();
-      let text = data.candidates[0].content.parts[0].text;
-      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      
+      let text = data.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
       const result = JSON.parse(text);
       
       setFont(result.font);
       setCaptionColor(result.color);
       setIntensity(result.intensity);
       setCustomCaptions(result.captions);
-      
-      alert(`Research Complete! I analysed the top videos for ${gameName} and applied the viral style.`);
+      alert(`Research Complete! The viral style and mechanics for ${gameName} have been applied.`);
     } catch (err) {
       console.error(err);
-      alert("Failed to research. Your API keys might be wrong or limits reached.");
+      alert("Research failed. Check API limits or the game name spelling.");
     } finally {
+      setAgentStatus('');
       setIsResearching(false);
     }
   };
 
+  const drawTimeline = (duration, wf, hl, ds) => {
+    const canvas = document.getElementById('timelineCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width; const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    
+    ctx.fillStyle = '#1c1c21'; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+    ds.forEach(d => { ctx.fillRect((d.start / duration) * w, 0, ((d.end - d.start) / duration) * w, h); });
+    ctx.fillStyle = 'rgba(139, 92, 246, 0.5)';
+    hl.forEach(hl => { ctx.fillRect((hl.time / duration) * w, 0, ((hl.end - hl.time) / duration) * w, h); });
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    wf.forEach((val, i) => {
+      let x = (i / wf.length) * w;
+      let amp = (val / 255) * h;
+      ctx.fillRect(x, h/2 - amp/2, 1, amp); 
+    });
+  };
+
+  useEffect(() => {
+    if (videoDuration > 0) drawTimeline(videoDuration, waveform, highlights, deadSpace);
+  }, [highlights, deadSpace, waveform, videoDuration]);
+
   const startAnalysis = async () => {
     if (!videoRef.current) return;
     setIsAnalyzing(true);
-    setHighlights([]);
+    setHighlights([]); setDeadSpace([]); setWaveform([]);
     
     const video = videoRef.current;
-    video.muted = false;
-    video.currentTime = 0;
+    video.muted = false; video.currentTime = 0;
     
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     const audioCtx = audioCtxRef.current;
@@ -182,8 +267,7 @@ function App() {
     source.connect(analyser);
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    const detectedHighlights = [];
-    
+    let detectedHighlights = [], detectedDeadSpace = [], detectedWaveform = [], silenceStart = null;
     const mCanvas = document.getElementById('motionCanvas');
     const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
     let prevFrameData = null;
@@ -192,32 +276,18 @@ function App() {
 
     const analyzeLoop = () => {
       if (video.paused || video.ended) {
-        setIsAnalyzing(false);
-        setAnalyzeProgress(100);
-        source.disconnect();
-        
-        const merged = [];
-        detectedHighlights.sort((a, b) => a.time - b.time).forEach(h => {
-          if (merged.length === 0) merged.push(h);
-          else {
-            const last = merged[merged.length - 1];
-            if (h.time - last.time < 3) {
-              last.end = h.time + 2;
-              last.score = Math.max(last.score, h.score);
-            } else {
-              merged.push(h);
-            }
-          }
-        });
-        setHighlights(merged);
+        setIsAnalyzing(false); setAnalyzeProgress(100); source.disconnect();
+        if (silenceStart && video.currentTime - silenceStart > 2) detectedDeadSpace.push({ start: silenceStart, end: video.currentTime });
+        setHighlights(detectedHighlights); setDeadSpace(detectedDeadSpace); setWaveform(detectedWaveform);
         setActiveTab('editor');
         return;
       }
 
       analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
       const avgVolume = sum / dataArray.length;
+      
+      if (detectedWaveform.length < (video.currentTime * 10)) detectedWaveform.push(avgVolume);
 
       mCtx.drawImage(video, 0, 0, 64, 64);
       const currentFrameData = mCtx.getImageData(0, 0, 64, 64).data;
@@ -229,23 +299,28 @@ function App() {
       }
       prevFrameData = currentFrameData;
 
+      if (avgVolume < 15 && motionScore < 100) {
+        if (!silenceStart) silenceStart = video.currentTime;
+      } else {
+        if (silenceStart && video.currentTime - silenceStart > 2) detectedDeadSpace.push({ start: silenceStart, end: video.currentTime });
+        silenceStart = null;
+      }
+
       if (avgVolume > 60 || motionScore > 500) {
         if (detectedHighlights.length === 0 || video.currentTime - detectedHighlights[detectedHighlights.length-1].time > 2) {
-           detectedHighlights.push({ time: video.currentTime, end: video.currentTime + 3, score: avgVolume + motionScore });
+           detectedHighlights.push({ time: video.currentTime, end: video.currentTime + 3 });
         }
       }
 
       setAnalyzeProgress((video.currentTime / video.duration) * 100);
       requestAnimationFrame(analyzeLoop);
     };
-
     analyzeLoop();
   };
 
   const renderVideo = async () => {
     if (!videoRef.current) return;
-    setIsRendering(true);
-    setRenderProgress(0);
+    setIsRendering(true); setRenderProgress(0);
     
     const video = videoRef.current;
     const canvas = document.getElementById('renderCanvas');
@@ -258,11 +333,48 @@ function App() {
 
     const stream = canvas.captureStream(30);
     const audioCtx = audioCtxRef.current;
-    const source = audioCtx.createMediaElementSource(video);
+    
+    // AUDIO GRAPH
+    const gameSource = audioCtx.createMediaElementSource(video);
+    const gameGain = audioCtx.createGain();
+    const analyser = audioCtx.createAnalyser();
+    gameSource.connect(analyser);
+    gameSource.connect(gameGain);
+    gameGain.connect(audioCtx.destination);
+
     const dest = audioCtx.createMediaStreamDestination();
-    source.connect(dest);
-    source.connect(audioCtx.destination);
+    gameGain.connect(dest);
+
+    let musicSource = null, musicAudio = null, musicGain = null;
+    if (musicUrl) {
+      musicAudio = new Audio(musicUrl); musicAudio.loop = true;
+      musicSource = audioCtx.createMediaElementSource(musicAudio);
+      musicGain = audioCtx.createGain();
+      musicGain.gain.value = musicVolume;
+      musicSource.connect(musicGain);
+      musicGain.connect(dest);
+      musicGain.connect(audioCtx.destination);
+      musicAudio.play();
+    }
+    
     dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+
+    // LIVE CAPTIONS
+    let recognition = null;
+    if (window.SpeechRecognition || window.webkitSpeechRecognition) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onresult = (event) => {
+        let current = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          current += event.results[i][0].transcript;
+        }
+        setLiveCaption(current);
+      };
+      recognition.start();
+    }
 
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
     mediaRecorderRef.current = recorder;
@@ -270,71 +382,115 @@ function App() {
 
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
     recorder.onstop = () => {
+      if (musicAudio) musicAudio.pause();
+      if (recognition) recognition.stop();
       const blob = new Blob(chunksRef.current, { type: 'video/webm' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `VR_Edit_${ratio.replace(':','x')}.webm`;
-      a.click();
-      setIsRendering(false);
-      setRenderProgress(100);
+      const a = document.createElement('a'); a.href = url; a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; a.click();
+      setIsRendering(false); setRenderProgress(100);
     };
 
     video.currentTime = 0;
     video.play();
     recorder.start();
 
-    let captionIndex = 0;
+    let lastHighlightTime = -10;
+    let shakeFrames = 0;
+    let flashFrames = 0;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
     const renderLoop = () => {
-      if (video.paused || video.ended) {
-        recorder.stop();
-        return;
-      }
+      if (video.paused || video.ended) { recorder.stop(); return; }
 
       const time = video.currentTime;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      if (audioDucking && musicGain) {
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        const vol = sum / dataArray.length;
+        musicGain.gain.value = vol > 50 ? 0.05 : musicVolume;
+      }
 
       const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
+      const newHighlight = isHighlight && (time - lastHighlightTime > 2);
+      if (newHighlight) {
+        lastHighlightTime = time;
+        if (impactEffects) { shakeFrames = 15; flashFrames = 5; }
+        if (memeSFX) {
+           const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+           osc.type = 'sine'; osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+           osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.3);
+           gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+           gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+           osc.connect(gain); gain.connect(dest); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+        }
+      }
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      
+      if (shakeFrames > 0) {
+        ctx.translate((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30);
+        shakeFrames--;
+      }
+
+      if (beatSync && musicUrl) {
+        const beatScale = 1 + Math.abs(Math.sin(time * Math.PI)) * 0.03;
+        ctx.translate(canvas.width/2, canvas.height/2); ctx.scale(beatScale, beatScale); ctx.translate(-canvas.width/2, -canvas.height/2);
+      }
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       if (isHighlight) {
-        let zoom = 1.0;
-        if (intensity !== 'low') {
-           const pulse = Math.sin(time * 10) * 0.05; 
-           zoom = intensity === 'extreme' ? 1.15 + pulse : 1.08 + pulse;
-        }
+        let zoom = 1.08 + Math.sin(time * 10) * 0.05;
+        if (intensity === 'extreme') zoom = 1.15 + Math.sin(time * 10) * 0.05;
         
-        if (zoom !== 1.0) {
-          ctx.translate(canvas.width / 2, canvas.height / 2);
-          ctx.scale(zoom, zoom);
-          ctx.translate(-canvas.width / 2, -canvas.height / 2);
-        }
+        ctx.translate(canvas.width / 2, canvas.height / 2); ctx.scale(zoom, zoom); ctx.translate(-canvas.width / 2, -canvas.height / 2);
 
         ctx.fillStyle = captionColor;
         ctx.fillRect(canvas.width * 0.05, canvas.height * 0.8, canvas.width * 0.9, 140);
         
         ctx.fillStyle = 'white';
-        let fontString = 'bold 80px Montserrat';
-        if (font === 'Bangers') fontString = '90px Bangers';
-        if (font === 'Inter') fontString = '900 80px Inter';
+        ctx.font = customFontName ? `90px "${customFontName}"` : `bold 80px ${font}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         
-        ctx.font = fontString;
-        ctx.textAlign = 'center';
-        
-        const activeCaption = customCaptions[captionIndex % customCaptions.length];
-        ctx.fillText(activeCaption.toUpperCase(), canvas.width / 2, canvas.height * 0.8 + 95);
-        
-        if (time % 2 < 0.1) captionIndex++;
+        let displayCaption = liveCaption ? liveCaption.toUpperCase() : customCaptions[0];
+        ctx.save();
+        let textX = canvas.width / 2; let textY = canvas.height * 0.8 + 70;
+
+        if (textAnimation === 'bounce') textY -= Math.abs(Math.sin(time * 15)) * 30;
+        else if (textAnimation === 'shake') { textX += (Math.random() - 0.5) * 20; textY += (Math.random() - 0.5) * 20; }
+        else if (textAnimation === 'pulse') {
+          const scale = 1 + Math.sin(time * 20) * 0.1;
+          ctx.translate(textX, textY); ctx.scale(scale, scale); textX = 0; textY = 0;
+        }
+
+        ctx.fillText(displayCaption.substring(0, 20), textX, textY);
+        ctx.restore();
       }
 
-      if (!isHighlight && intensity !== 'low') {
-         video.currentTime += 0.5;
+      if (flashFrames > 0) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${flashFrames * 0.15})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        flashFrames--;
+      }
+
+      if (showSafeZone && ratio === '9:16') {
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.lineWidth = 4; ctx.setLineDash([20, 20]);
+        ctx.strokeRect(50, 200, canvas.width - 100, canvas.height - 500);
+        ctx.font = '30px Inter'; ctx.fillStyle = 'rgba(255,0,0,0.7)'; ctx.textAlign = 'center';
+        ctx.fillText('SOCIAL UI SAFE ZONE', canvas.width/2, 180);
+        ctx.setLineDash([]);
+      }
+
+      if (intensity !== 'low') {
+        const isDeadSpace = deadSpace.some(d => time >= d.start && time <= d.end);
+        if (isDeadSpace) video.currentTime += 1.0;
+        else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
       }
 
       setRenderProgress((video.currentTime / video.duration) * 100);
       requestAnimationFrame(renderLoop);
     };
-
     renderLoop();
   };
 
@@ -348,40 +504,31 @@ function App() {
       <main className="max-w-3xl mx-auto p-4 space-y-6">
         
         {activeTab === 'dashboard' && (
-          <div className="space-y-6">
-            <div className="glass p-8 rounded-3xl text-center space-y-6 relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-blue-500"></div>
-              <h2 className="text-3xl font-extrabold tracking-tight">Create a <span className="neon-text">Masterpiece</span></h2>
-              <p className="text-gray-400 text-sm max-w-xs mx-auto">Import raw VR gameplay. Our streaming AI finds the loudest, fastest moments and edits it for you.</p>
-              
-              <label className="neon-btn cursor-pointer inline-block w-full py-4 rounded-xl font-bold text-lg">
-                <span>Import Video</span>
-                <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
-              </label>
-            </div>
+          <div className="glass p-8 rounded-3xl text-center space-y-6">
+            <h2 className="text-3xl font-extrabold tracking-tight">Create a <span className="neon-text">Masterpiece</span></h2>
+            <p className="text-gray-400 text-sm">Import raw VR gameplay. AI finds loud/fast moments, cuts silence, and applies effects.</p>
+            <label className="neon-btn cursor-pointer block w-full py-4 rounded-xl font-bold text-lg">
+              <span>Import Video</span>
+              <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
+            </label>
           </div>
         )}
 
         {activeTab === 'analyze' && (
-          <div className="space-y-6">
-            <div className="glass p-6 rounded-3xl">
-              <h2 className="text-xl font-bold mb-2">AI Video Analysis</h2>
-              <p className="text-sm text-gray-400 mb-6">Playing video to map audio spikes and motion detection. Keep the app open.</p>
-              
-              <div className="h-32 bg-black/50 rounded-xl mb-4 flex items-center justify-center border border-gray-800">
-                <video ref={videoRef} src={videoUrl} onLoadedMetadata={handleVideoLoaded} className="hidden" playsInline crossOrigin="anonymous" />
-                <div className="text-center">
-                  <p className="text-sm font-mono text-purple-400 mb-2">{Math.floor(analyzeProgress)}% Analyzed</p>
-                  <div className="w-48 h-2 bg-gray-800 rounded-full mx-auto overflow-hidden">
-                    <div className="h-full bg-purple-500 transition-all" style={{ width: `${analyzeProgress}%` }}></div>
-                  </div>
+          <div className="glass p-6 rounded-3xl space-y-4">
+            <h2 className="text-xl font-bold">AI Analysis</h2>
+            <div className="h-32 bg-black/50 rounded-xl flex items-center justify-center border border-gray-800">
+              <video ref={videoRef} src={videoUrl} onLoadedMetadata={(e) => setVideoDuration(e.target.duration)} className="hidden" playsInline crossOrigin="anonymous" />
+              <div className="text-center">
+                <p className="text-sm font-mono text-purple-400 mb-2">{Math.floor(analyzeProgress)}% Analyzed</p>
+                <div className="w-48 h-2 bg-gray-800 rounded-full mx-auto overflow-hidden">
+                  <div className="h-full bg-purple-500 transition-all" style={{ width: `${analyzeProgress}%` }}></div>
                 </div>
               </div>
-
-              {!isAnalyzing && highlights.length === 0 && (
-                <button onClick={startAnalysis} className="neon-btn w-full py-4 rounded-xl font-bold">Start Real-Time Analysis</button>
-              )}
             </div>
+            {!isAnalyzing && highlights.length === 0 && (
+              <button onClick={startAnalysis} className="neon-btn w-full py-4 rounded-xl font-bold">Start Analysis</button>
+            )}
           </div>
         )}
 
@@ -390,95 +537,81 @@ function App() {
             
             <div className="glass p-5 rounded-3xl space-y-4 border border-purple-500/30">
               <h3 className="font-bold text-sm uppercase tracking-wider text-purple-400">🧠 Real Game Intel Agent</h3>
-              <p className="text-xs text-gray-400">The AI will search YouTube for recent Shorts of this game, read their transcripts, and apply the exact viral style they are using.</p>
+              <p className="text-xs text-gray-400">Scrapes the wiki for mechanics + YouTube for viral trends.</p>
               <div className="flex gap-2">
-                <input type="text" placeholder="e.g. Gorilla Tag" value={gameName} onChange={(e) => setGameName(e.target.value)} className="flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
+                <input type="text" placeholder="e.g. Blade & Sorcery" value={gameName} onChange={(e) => setGameName(e.target.value)} className="flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
                 <button onClick={researchGameStyle} disabled={isResearching} className="neon-btn px-4 py-3 rounded-xl font-bold text-sm">
-                  {isResearching ? 'Analyzing...' : 'Research'}
+                  {isResearching ? 'Working...' : 'Research'}
                 </button>
               </div>
-              {customCaptions.length > 0 && (
-                <p className="text-xs text-green-400 font-mono">Active Captions: {customCaptions.join(" | ")}</p>
-              )}
-            </div>
-
-            <div className="glass p-5 rounded-3xl space-y-4">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400">Format</h3>
-              <div className="flex gap-3">
-                <button onClick={() => setRatio('9:16')} className={`flex-1 py-3 rounded-xl font-bold border ${ratio === '9:16' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Shorts (9:16)</button>
-                <button onClick={() => setRatio('16:9')} className={`flex-1 py-3 rounded-xl font-bold border ${ratio === '16:9' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Long (16:9)</button>
-              </div>
-            </div>
-
-            <div className="glass p-5 rounded-3xl space-y-4">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400">Styling</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-gray-500 font-bold mb-1 block">Font</label>
-                  <select value={font} onChange={(e) => setFont(e.target.value)} className="w-full bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none">
-                    <option value="Montserrat">Montserrat</option>
-                    <option value="Bangers">Bangers</option>
-                    <option value="Inter">Inter</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 font-bold mb-1 block">Color</label>
-                  <input type="color" value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full h-12 bg-gray-900 border border-gray-800 rounded-xl cursor-pointer" />
-                </div>
-              </div>
+              {agentStatus && <p className="text-xs text-blue-400 font-mono animate-pulse">{agentStatus}</p>}
+              {customCaptions.length > 0 && <p className="text-xs text-green-400 font-mono">Active Captions: {customCaptions.join(" | ")}</p>}
             </div>
 
             <div className="glass p-5 rounded-3xl">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400 mb-2">Timeline Map</h3>
-              <div className="timeline-track">
-                {highlights.map((h, i) => (
-                  <div key={i} className="timeline-highlight" style={{ left: `${(h.time / videoDuration) * 100}%`, width: `${((h.end - h.time) / videoDuration) * 100}%` }} />
-                ))}
+              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline Map</h3>
+              <canvas id="timelineCanvas" className="w-full h-[100px] rounded-lg" />
+              <div className="flex gap-3 text-xs font-mono mt-2">
+                <span className="flex items-center gap-1"><div className="w-3 h-3 bg-purple-500 rounded-sm"></div> Action</span>
+                <span className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500/50 rounded-sm"></div> Dead Space</span>
               </div>
             </div>
 
-            <button onClick={() => setActiveTab('export')} className="neon-btn w-full py-4 rounded-xl font-bold mt-4">Continue to Export</button>
+            <div className="glass p-5 rounded-3xl space-y-2">
+              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Pro Features</h3>
+              <label className="toggle-label">Safe Zone Overlay <input type="checkbox" className="toggle-checkbox" checked={showSafeZone} onChange={(e) => setShowSafeZone(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <label className="toggle-label">Audio Ducking <input type="checkbox" className="toggle-checkbox" checked={audioDucking} onChange={(e) => setAudioDucking(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <label className="toggle-label">Impact Shakes & Flashes <input type="checkbox" className="toggle-checkbox" checked={impactEffects} onChange={(e) => setImpactEffects(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <label className="toggle-label">Meme SFX <input type="checkbox" className="toggle-checkbox" checked={memeSFX} onChange={(e) => setMemeSFX(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <label className="toggle-label">Beat Sync Pulse <input type="checkbox" className="toggle-checkbox" checked={beatSync} onChange={(e) => setBeatSync(e.target.checked)} /><div className="toggle-switch"></div></label>
+            </div>
+
+            <div className="glass p-5 rounded-3xl space-y-4">
+              <h3 className="font-bold text-sm uppercase text-gray-400">Custom Assets</h3>
+              <div className="flex gap-2">
+                <label className="flex-1 cursor-pointer bg-gray-900 border border-gray-800 rounded-xl p-3 text-center text-sm font-bold text-gray-300">
+                  <span>Font (.ttf)</span><input type="file" accept=".ttf,.otf" className="hidden" onChange={handleFontUpload} />
+                </label>
+                <label className="flex-1 cursor-pointer bg-gray-900 border border-gray-800 rounded-xl p-3 text-center text-sm font-bold text-gray-300">
+                  <span>Music</span><input type="file" accept="audio/*" className="hidden" onChange={(e) => setMusicUrl(URL.createObjectURL(e.target.files[0]))} />
+                </label>
+              </div>
+            </div>
+
+            <div className="glass p-5 rounded-3xl space-y-4">
+              <h3 className="font-bold text-sm uppercase text-gray-400">Intensity</h3>
+              <input type="range" min="1" max="3" value={intensity === 'low' ? 1 : intensity === 'medium' ? 2 : 3} onChange={(e) => setIntensity(e.target.value === '1' ? 'low' : e.target.value === '2' ? 'medium' : 'extreme')} className="w-full accent-purple-500" />
+            </div>
+
+            <button onClick={() => setActiveTab('export')} className="neon-btn w-full py-4 rounded-xl font-bold">Continue to Export</button>
           </div>
         )}
 
         {activeTab === 'export' && (
-          <div className="space-y-6">
-            <div className="glass p-8 rounded-3xl text-center space-y-6">
-              <h2 className="text-2xl font-bold">Render Studio</h2>
-              <p className="text-sm text-gray-400">Render locally. Do not lock your screen.</p>
-
-              {isRendering ? (
-                <div className="space-y-2">
-                  <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
-                  </div>
-                  <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
+          <div className="glass p-8 rounded-3xl text-center space-y-6">
+            <h2 className="text-2xl font-bold">Render Studio</h2>
+            <p className="text-sm text-gray-400">Keep screen on. Ducking, SFX, and Captions are active.</p>
+            {isRendering ? (
+              <div className="space-y-2">
+                <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
                 </div>
-              ) : (
-                <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
-              )}
-            </div>
+                <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
+                <p className="text-xs text-purple-400 mt-2">🎤 Live Mic: {liveCaption || "Listening..."}</p>
+              </div>
+            ) : (
+              <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
+            )}
           </div>
         )}
 
         {activeTab === 'settings' && (
-          <div className="space-y-6">
-            <div className="glass p-6 rounded-3xl space-y-4">
-              <h2 className="text-xl font-bold">Settings</h2>
-              <div>
-                <label className="text-xs text-gray-500 font-bold mb-1 block">Gemini API Key</label>
-                <input type="password" placeholder="Paste your Gemini key..." value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} className="w-full bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 font-bold mb-1 block">YouTube API Key</label>
-                <input type="password" placeholder="Paste your YouTube key..." value={ytKey} onChange={(e) => setYtKey(e.target.value)} className="w-full bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 font-bold mb-1 block">Transcript API Key</label>
-                <input type="password" placeholder="Paste your Transcript key..." value={transcriptKey} onChange={(e) => setTranscriptKey(e.target.value)} className="w-full bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
-              </div>
-              <button onClick={saveSettings} className="neon-btn w-full py-3 rounded-xl font-bold">Save All Keys</button>
-            </div>
+          <div className="glass p-6 rounded-3xl space-y-4">
+            <h2 className="text-xl font-bold">API Keys</h2>
+            <input type="password" placeholder="Gemini Key" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <input type="password" placeholder="YouTube Key" value={ytKey} onChange={(e) => setYtKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <input type="password" placeholder="Transcript Key" value={transcriptKey} onChange={(e) => setTranscriptKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <button onClick={saveSettings} className="neon-btn w-full py-3 rounded-xl font-bold">Save Keys</button>
           </div>
         )}
 
@@ -487,9 +620,7 @@ function App() {
       <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
         {['dashboard', 'analyze', 'editor', 'export', 'settings'].map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
-            <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>
-              {tab[0].toUpperCase()}
-            </div>
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>{tab[0].toUpperCase()}</div>
             <span>{tab}</span>
           </button>
         ))}
