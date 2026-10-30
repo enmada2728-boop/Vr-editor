@@ -38,10 +38,10 @@ function App() {
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoDuration, setVideoDuration] = useState(0);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzeProgress, setAnalyzeProgress] = useState(0);
   
   // Analysis Data
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [highlights, setHighlights] = useState([]);
   const [deadSpace, setDeadSpace] = useState([]);
   const [waveform, setWaveform] = useState([]);
@@ -53,30 +53,25 @@ function App() {
   const [captionColor, setCaptionColor] = useState('#8b5cf6');
   const [textAnimation, setTextAnimation] = useState('bounce');
   
-  // Top-Tier Toggles
+  // Toggles
   const [showSafeZone, setShowSafeZone] = useState(true);
   const [audioDucking, setAudioDucking] = useState(true);
   const [impactEffects, setImpactEffects] = useState(true);
   const [memeSFX, setMemeSFX] = useState(true);
   const [beatSync, setBeatSync] = useState(true);
   
-  // Custom Assets
+  // Assets & API
   const [customFontName, setCustomFontName] = useState('');
   const [musicUrl, setMusicUrl] = useState(null);
   const [musicVolume, setMusicVolume] = useState(0.3);
-  
-  // AI Agent
-  const [agentStatus, setAgentStatus] = useState('');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
   const [ytKey, setYtKey] = useState(localStorage.getItem('vr_editor_yt') || '');
   const [transcriptKey, setTranscriptKey] = useState(localStorage.getItem('vr_editor_transcript') || '');
-  const [gameName, setGameName] = useState('');
-  const [isResearching, setIsResearching] = useState(false);
-  const [customCaptions, setCustomCaptions] = useState(["EPIC MOMENT", "NO WAY", "CLUTCH"]);
   
   // Render State
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
+  const [renderStatus, setRenderStatus] = useState('');
   const [renderError, setRenderError] = useState('');
 
   const videoRef = useRef(null);
@@ -97,7 +92,7 @@ function App() {
       setVideoFile(file);
       setVideoUrl(URL.createObjectURL(file));
       setHighlights([]); setDeadSpace([]); setWaveform([]);
-      setRenderError('');
+      setRenderError(''); setRenderStatus('');
       setAnalyzeProgress(0);
       setActiveTab('analyze');
     }
@@ -122,7 +117,6 @@ function App() {
     const ctx = canvas.getContext('2d');
     const w = canvas.width; const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-    
     ctx.fillStyle = '#1c1c21'; ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
     ds.forEach(d => { ctx.fillRect((d.start / duration) * w, 0, ((d.end - d.start) / duration) * w, h); });
@@ -140,7 +134,6 @@ function App() {
     if (videoDuration > 0) drawTimeline(videoDuration, waveform, highlights, deadSpace);
   }, [highlights, deadSpace, waveform, videoDuration]);
 
-  // --- ANALYSIS ENGINE ---
   const startAnalysis = async () => {
     if (!videoRef.current) return;
     setIsAnalyzing(true);
@@ -210,39 +203,42 @@ function App() {
     analyzeLoop();
   };
 
-  // --- RENDER ENGINE (FULLY FIXED) ---
   const renderVideo = async () => {
     setIsRendering(true); setRenderProgress(0); setRenderError('');
+    setRenderStatus('Loading video...');
     
     try {
-      // 1. Create a fresh video element just for rendering.
-      // This prevents the "InvalidStateError" crash from reusing the analyzed video.
       const video = document.createElement('video');
       video.src = videoUrl;
       video.crossOrigin = 'anonymous';
       video.playsInline = true;
-      
-      // Wait for video to load
-      await new Promise((resolve) => {
-        video.onloadedmetadata = resolve;
-      });
+      video.style.display = 'none';
+      document.body.appendChild(video); // Crucial for Android
 
+      // Safe wait for metadata
+      if (video.readyState < 1) {
+        await new Promise((resolve) => {
+          video.onloadedmetadata = resolve;
+          setTimeout(resolve, 2000); // Failsafe
+        });
+      }
+
+      setRenderStatus('Setting up canvas...');
       const canvas = document.getElementById('renderCanvas');
       const ctx = canvas.getContext('2d');
       
-      // 720p is safe for Android RAM
       if (ratio === '9:16') { canvas.width = 720; canvas.height = 1280; }
       else { canvas.width = 1280; canvas.height = 720; }
 
       await document.fonts.ready;
 
-      // 2. Setup Audio
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      setRenderStatus('Connecting audio...');
+      const audioCtx = audioCtxRef.current;
       const dest = audioCtx.createMediaStreamDestination();
       
       const gameSource = audioCtx.createMediaElementSource(video);
       gameSource.connect(dest);
-      gameSource.connect(audioCtx.destination); // Allow audio to play out loud (or mute video if you want it silent during render)
+      gameSource.connect(audioCtx.destination);
 
       let musicAudio = null, musicGain = null;
       if (musicUrl) {
@@ -255,11 +251,10 @@ function App() {
         musicGain.connect(audioCtx.destination);
       }
 
-      // 3. Setup Canvas Stream
       const stream = canvas.captureStream(30);
       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-      // 4. Setup Recorder (with Android fallback)
+      setRenderStatus('Starting recorder...');
       let options = { mimeType: 'video/webm;codecs=vp9,opus' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm;codecs=vp8,opus' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' };
@@ -270,6 +265,7 @@ function App() {
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = () => {
         if (musicAudio) musicAudio.pause();
+        document.body.removeChild(video);
         const blob = new Blob(chunksRef.current, { type: options.mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); 
@@ -277,20 +273,24 @@ function App() {
         a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; 
         a.click();
         setIsRendering(false); setRenderProgress(100);
+        setRenderStatus('Done! Check your downloads.');
       };
 
-      // 5. Start everything
       video.currentTime = 0;
-      await video.play(); // Important: must await play()
+      video.play().catch(e => console.log("Play error:", e));
       if (musicAudio) musicAudio.play();
+      
+      // Wait a moment for playback to actually start before recording
+      await new Promise(r => setTimeout(r, 500));
+      
       recorder.start();
+      setRenderStatus('Rendering...');
 
       let lastHighlightTime = -10;
       let shakeFrames = 0;
       let flashFrames = 0;
       let captionIndex = 0;
       
-      // Audio analyser for ducking
       const analyser = audioCtx.createAnalyser();
       gameSource.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -303,7 +303,6 @@ function App() {
 
         const time = video.currentTime;
         
-        // Ducking
         if (audioDucking && musicGain) {
           analyser.getByteFrequencyData(dataArray);
           let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
@@ -381,7 +380,7 @@ function App() {
         if (intensity !== 'low') {
           const currentDead = deadSpace.find(d => time >= d.start && time <= d.end);
           if (currentDead) {
-             video.currentTime = currentDead.end; // Skip!
+             video.currentTime = currentDead.end;
           }
           else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
         }
@@ -393,10 +392,14 @@ function App() {
       
     } catch (error) {
       console.error(error);
-      setRenderError("Render Error: " + error.message + ". Make sure you are using Chrome on Android.");
+      setRenderError("Render Error: " + error.message);
       setIsRendering(false);
+      setRenderStatus('');
     }
   };
+
+  // Just in case customCaptions gets lost
+  const customCaptions = ["EPIC MOMENT", "NO WAY", "CLUTCH"];
 
   return (
     <div className="min-h-screen pb-24">
@@ -447,7 +450,7 @@ function App() {
               <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Pro Features</h3>
               <label className="toggle-label">Safe Zone Overlay <input type="checkbox" className="toggle-checkbox" checked={showSafeZone} onChange={(e) => setShowSafeZone(e.target.checked)} /><div className="toggle-switch"></div></label>
               <label className="toggle-label">Audio Ducking <input type="checkbox" className="toggle-checkbox" checked={audioDucking} onChange={(e) => setAudioDucking(e.target.checked)} /><div className="toggle-switch"></div></label>
-              <label className="toggle-label">Impact Shakes & Flashes <input type="checkbox" className="toggle-checkbox" checked={impactEffects} onChange={(e) => setImpactEffects(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <label className="toggle-label">Impact Effects <input type="checkbox" className="toggle-checkbox" checked={impactEffects} onChange={(e) => setImpactEffects(e.target.checked)} /><div className="toggle-switch"></div></label>
               <label className="toggle-label">Meme SFX <input type="checkbox" className="toggle-checkbox" checked={memeSFX} onChange={(e) => setMemeSFX(e.target.checked)} /><div className="toggle-switch"></div></label>
               <label className="toggle-label">Beat Sync Pulse <input type="checkbox" className="toggle-checkbox" checked={beatSync} onChange={(e) => setBeatSync(e.target.checked)} /><div className="toggle-switch"></div></label>
             </div>
@@ -484,7 +487,7 @@ function App() {
                   <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
                 </div>
                 <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
-                <p className="text-xs text-gray-500">Keep screen on.</p>
+                <p className="text-xs text-yellow-400 font-bold mt-2">{renderStatus}</p>
               </div>
             ) : (
               <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
@@ -492,10 +495,20 @@ function App() {
           </div>
         )}
 
+        {activeTab === 'settings' && (
+          <div className="glass p-6 rounded-3xl space-y-4">
+            <h2 className="text-xl font-bold">API Keys</h2>
+            <input type="password" placeholder="Gemini Key" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <input type="password" placeholder="YouTube Key" value={ytKey} onChange={(e) => setYtKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <input type="password" placeholder="Transcript Key" value={transcriptKey} onChange={(e) => setTranscriptKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
+            <button onClick={saveSettings} className="neon-btn w-full py-3 rounded-xl font-bold">Save Keys</button>
+          </div>
+        )}
+
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
-        {['dashboard', 'analyze', 'editor', 'export'].map(tab => (
+        {['dashboard', 'analyze', 'editor', 'export', 'settings'].map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
             <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>{tab[0].toUpperCase()}</div>
             <span>{tab}</span>
