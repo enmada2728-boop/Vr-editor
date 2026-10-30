@@ -16,7 +16,6 @@
   .neon-text { background: linear-gradient(135deg, #8b5cf6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; }
   .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
-  .timeline-container { background: #121215; border: 1px solid #27272a; border-radius: 8px; overflow: hidden; position: relative; }
   .toggle-checkbox { display: none; }
   .toggle-label { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 10px 0; border-bottom: 1px solid #27272a; font-size: 14px; font-weight: 600; }
   .toggle-switch { position: relative; width: 44px; height: 24px; background: #3f3f46; border-radius: 12px; transition: 0.3s; }
@@ -66,8 +65,7 @@ function App() {
   const [musicUrl, setMusicUrl] = useState(null);
   const [musicVolume, setMusicVolume] = useState(0.3);
   
-  // Live Transcription & AI Agent
-  const [liveCaption, setLiveCaption] = useState('');
+  // AI Agent
   const [agentStatus, setAgentStatus] = useState('');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
   const [ytKey, setYtKey] = useState(localStorage.getItem('vr_editor_yt') || '');
@@ -79,10 +77,10 @@ function App() {
   // Render State
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
+  const [renderError, setRenderError] = useState('');
 
   const videoRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const videoSourceRef = useRef(null); // Fixed: Store the audio source here
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
@@ -99,6 +97,7 @@ function App() {
       setVideoFile(file);
       setVideoUrl(URL.createObjectURL(file));
       setHighlights([]); setDeadSpace([]); setWaveform([]);
+      setRenderError('');
       setAnalyzeProgress(0);
       setActiveTab('analyze');
     }
@@ -115,102 +114,6 @@ function App() {
       setCustomFontName('UserCustomFont');
       alert("Custom font loaded!");
     } catch (err) { alert("Failed to load font. Make sure it is a .ttf or .otf file."); }
-  };
-
-  const scrapeWikiContext = async (game) => {
-    try {
-      setAgentStatus("Scraping game wiki for mechanics...");
-      const formattedName = game.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      const wikiTitle = game.replace(/\s+/g, '_');
-      const targetUrl = `https://${formattedName}.fandom.com/wiki/${wikiTitle}`;
-      const corsProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-      
-      const response = await fetch(corsProxy);
-      const data = await response.json();
-      
-      if (!data.contents) return "No wiki data found.";
-      
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(data.contents, "text/html");
-      
-      const paragraphs = Array.from(doc.querySelectorAll('.mw-parser-output p'))
-        .slice(0, 5)
-        .map(p => p.textContent)
-        .join(' ');
-        
-      return paragraphs.substring(0, 2000) || "Wiki text was empty.";
-    } catch (err) {
-      return "Wiki scraping failed.";
-    }
-  };
-
-  const researchGameStyle = async () => {
-    if (!geminiKey || !ytKey || !transcriptKey) { alert("Add all 3 API keys in Settings."); return; }
-    if (!gameName) { alert("Enter game name."); return; }
-    
-    setIsResearching(true);
-    let videoData = "";
-
-    try {
-      const wikiContext = await scrapeWikiContext(gameName);
-
-      setAgentStatus("Searching YouTube for viral Shorts...");
-      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(gameName + ' VR shorts')}&type=video&order=viewCount&maxResults=3&key=${ytKey}`;
-      const searchRes = await fetch(searchUrl);
-      const searchData = await searchRes.json();
-      
-      if (searchData.items && searchData.items.length > 0) {
-        for (const item of searchData.items) {
-          setAgentStatus("Reading YouTube transcripts...");
-          let transcriptText = "Transcript unavailable.";
-          try {
-            const trRes = await fetch(`https://youtube-transcript.ai/transcript/${item.id.videoId}.txt?key=${transcriptKey}`);
-            if (trRes.ok) transcriptText = (await trRes.text()).substring(0, 1500);
-          } catch (e) { /* Ignore */ }
-          videoData += `VIDEO: "${item.snippet.title}"\nTRANSCRIPT: "${transcriptText}"\n\n`;
-        }
-      }
-
-      setAgentStatus("Analyzing data with Gemini...");
-      const prompt = `You are a viral YouTube Shorts editor. I am editing "${gameName}".
-      
-      Here is the actual lore and mechanics of the game from the Wiki:
-      ${wikiContext}
-      
-      Here is what the top creators are saying in their viral videos:
-      ${videoData}
-      
-      Based on BOTH the actual game mechanics and the viral video trends, what editing style and specific comedic captions should I use?
-      
-      Respond ONLY with a valid JSON object (no markdown, no backticks):
-      {
-        "font": "Bangers" or "Montserrat" or "Inter",
-        "color": "#ff0000",
-        "intensity": "low" or "medium" or "extreme",
-        "captions": ["3 viral words based on the game's mechanics"]
-      }`;
-
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
-      
-      const data = await res.json();
-      let text = data.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const result = JSON.parse(text);
-      
-      setFont(result.font);
-      setCaptionColor(result.color);
-      setIntensity(result.intensity);
-      setCustomCaptions(result.captions);
-      alert(`Research Complete! Applied style for ${gameName}.`);
-    } catch (err) {
-      alert("Research failed. Check API limits.");
-    } finally {
-      setAgentStatus('');
-      setIsResearching(false);
-    }
   };
 
   const drawTimeline = (duration, wf, hl, ds) => {
@@ -237,6 +140,7 @@ function App() {
     if (videoDuration > 0) drawTimeline(videoDuration, waveform, highlights, deadSpace);
   }, [highlights, deadSpace, waveform, videoDuration]);
 
+  // --- ANALYSIS ENGINE ---
   const startAnalysis = async () => {
     if (!videoRef.current) return;
     setIsAnalyzing(true);
@@ -245,17 +149,11 @@ function App() {
     const video = videoRef.current;
     video.muted = false; video.currentTime = 0;
     
-    // FIX: Reuse AudioContext and Source Node
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     const audioCtx = audioCtxRef.current;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     
-    if (!videoSourceRef.current) {
-      videoSourceRef.current = audioCtx.createMediaElementSource(video);
-    }
-    const source = videoSourceRef.current;
-    source.disconnect(); // Disconnect from any previous renders
-    
+    const source = audioCtx.createMediaElementSource(video);
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     source.connect(analyser);
@@ -312,99 +210,90 @@ function App() {
     analyzeLoop();
   };
 
+  // --- RENDER ENGINE (FULLY FIXED) ---
   const renderVideo = async () => {
-    if (!videoRef.current) return;
-    setIsRendering(true); setRenderProgress(0);
+    setIsRendering(true); setRenderProgress(0); setRenderError('');
     
     try {
-      const video = videoRef.current;
+      // 1. Create a fresh video element just for rendering.
+      // This prevents the "InvalidStateError" crash from reusing the analyzed video.
+      const video = document.createElement('video');
+      video.src = videoUrl;
+      video.crossOrigin = 'anonymous';
+      video.playsInline = true;
+      
+      // Wait for video to load
+      await new Promise((resolve) => {
+        video.onloadedmetadata = resolve;
+      });
+
       const canvas = document.getElementById('renderCanvas');
       const ctx = canvas.getContext('2d');
       
-      // Lower resolution slightly for Android stability
+      // 720p is safe for Android RAM
       if (ratio === '9:16') { canvas.width = 720; canvas.height = 1280; }
       else { canvas.width = 1280; canvas.height = 720; }
 
       await document.fonts.ready;
 
-      const stream = canvas.captureStream(30);
-      const audioCtx = audioCtxRef.current;
-      
+      // 2. Setup Audio
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const dest = audioCtx.createMediaStreamDestination();
       
-      // FIX: Reuse the source node!
-      let source = videoSourceRef.current;
-      if (!source) {
-         source = audioCtx.createMediaElementSource(video);
-         videoSourceRef.current = source;
-      }
-      source.disconnect(); // Clear old connections
-      source.connect(dest);
-      source.connect(audioCtx.destination);
+      const gameSource = audioCtx.createMediaElementSource(video);
+      gameSource.connect(dest);
+      gameSource.connect(audioCtx.destination); // Allow audio to play out loud (or mute video if you want it silent during render)
 
-      let musicSource = null, musicAudio = null, musicGain = null;
+      let musicAudio = null, musicGain = null;
       if (musicUrl) {
         musicAudio = new Audio(musicUrl); musicAudio.loop = true;
-        musicSource = audioCtx.createMediaElementSource(musicAudio);
+        const musicSource = audioCtx.createMediaElementSource(musicAudio);
         musicGain = audioCtx.createGain();
         musicGain.gain.value = musicVolume;
         musicSource.connect(musicGain);
         musicGain.connect(dest);
         musicGain.connect(audioCtx.destination);
-        musicAudio.play();
       }
-      
+
+      // 3. Setup Canvas Stream
+      const stream = canvas.captureStream(30);
       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-      // Live Captions (with safety net)
-      let recognition = null;
-      try {
-        if (window.SpeechRecognition || window.webkitSpeechRecognition) {
-          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-          recognition = new SpeechRecognition();
-          recognition.continuous = true;
-          recognition.interimResults = true;
-          recognition.onresult = (event) => {
-            let current = '';
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-              current += event.results[i][0].transcript;
-            }
-            setLiveCaption(current);
-          };
-          recognition.start();
-        }
-      } catch (e) { console.warn("Speech Recognition blocked"); }
-
-      // MIME Type fallback for Android
+      // 4. Setup Recorder (with Android fallback)
       let options = { mimeType: 'video/webm;codecs=vp9,opus' };
-      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        options = { mimeType: 'video/webm;codecs=vp8,opus' };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-          options = { mimeType: 'video/webm' };
-        }
-      }
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm;codecs=vp8,opus' };
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' };
 
       const recorder = new MediaRecorder(stream, options);
-      mediaRecorderRef.current = recorder;
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = () => {
         if (musicAudio) musicAudio.pause();
-        if (recognition) recognition.stop();
         const blob = new Blob(chunksRef.current, { type: options.mimeType });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; a.click();
+        const a = document.createElement('a'); 
+        a.href = url; 
+        a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; 
+        a.click();
         setIsRendering(false); setRenderProgress(100);
       };
 
+      // 5. Start everything
       video.currentTime = 0;
-      video.play();
+      await video.play(); // Important: must await play()
+      if (musicAudio) musicAudio.play();
       recorder.start();
 
       let lastHighlightTime = -10;
       let shakeFrames = 0;
       let flashFrames = 0;
+      let captionIndex = 0;
+      
+      // Audio analyser for ducking
+      const analyser = audioCtx.createAnalyser();
+      gameSource.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       const renderLoop = () => {
         if (video.paused || video.ended) { 
@@ -414,15 +303,11 @@ function App() {
 
         const time = video.currentTime;
         
-        // Audio Ducking
+        // Ducking
         if (audioDucking && musicGain) {
-          const analyser = audioCtx.createAnalyser();
-          source.connect(analyser);
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
           analyser.getByteFrequencyData(dataArray);
           let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
           musicGain.gain.value = (sum / dataArray.length) > 50 ? 0.05 : musicVolume;
-          source.disconnect(analyser);
         }
 
         const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
@@ -444,7 +329,7 @@ function App() {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         
         if (shakeFrames > 0) {
-          ctx.translate((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30);
+          ctx.translate((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20);
           shakeFrames--;
         }
 
@@ -468,7 +353,7 @@ function App() {
           ctx.font = customFontName ? `70px "${customFontName}"` : `bold 60px ${font}`;
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           
-          let displayCaption = liveCaption ? liveCaption.toUpperCase() : customCaptions[0];
+          let displayCaption = customCaptions[captionIndex % customCaptions.length].toUpperCase();
           ctx.save();
           let textX = canvas.width / 2; let textY = canvas.height * 0.8 + 50;
 
@@ -477,6 +362,8 @@ function App() {
 
           ctx.fillText(displayCaption.substring(0, 20), textX, textY);
           ctx.restore();
+          
+          if (time % 2 < 0.1) captionIndex++;
         }
 
         if (flashFrames > 0) {
@@ -494,7 +381,7 @@ function App() {
         if (intensity !== 'low') {
           const currentDead = deadSpace.find(d => time >= d.start && time <= d.end);
           if (currentDead) {
-             video.currentTime = currentDead.end; // Skip the boring part!
+             video.currentTime = currentDead.end; // Skip!
           }
           else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
         }
@@ -506,7 +393,7 @@ function App() {
       
     } catch (error) {
       console.error(error);
-      alert("Render Error: " + error.message + "\nYour phone might be out of memory. Try a shorter video.");
+      setRenderError("Render Error: " + error.message + ". Make sure you are using Chrome on Android.");
       setIsRendering(false);
     }
   };
@@ -551,18 +438,6 @@ function App() {
 
         {activeTab === 'editor' && (
           <div className="space-y-4">
-            <div className="glass p-5 rounded-3xl space-y-4 border border-purple-500/30">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-purple-400">🧠 Real Game Intel Agent</h3>
-              <div className="flex gap-2">
-                <input type="text" placeholder="e.g. Blade & Sorcery" value={gameName} onChange={(e) => setGameName(e.target.value)} className="flex-1 bg-gray-900 border border-gray-800 rounded-xl p-3 text-white outline-none" />
-                <button onClick={researchGameStyle} disabled={isResearching} className="neon-btn px-4 py-3 rounded-xl font-bold text-sm">
-                  {isResearching ? 'Working...' : 'Research'}
-                </button>
-              </div>
-              {agentStatus && <p className="text-xs text-blue-400 font-mono animate-pulse">{agentStatus}</p>}
-              {customCaptions.length > 0 && <p className="text-xs text-green-400 font-mono">Active Captions: {customCaptions.join(" | ")}</p>}
-            </div>
-
             <div className="glass p-5 rounded-3xl">
               <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline Map</h3>
               <canvas id="timelineCanvas" className="w-full h-[100px] rounded-lg" />
@@ -589,11 +464,6 @@ function App() {
               </div>
             </div>
 
-            <div className="glass p-5 rounded-3xl space-y-4">
-              <h3 className="font-bold text-sm uppercase text-gray-400">Intensity</h3>
-              <input type="range" min="1" max="3" value={intensity === 'low' ? 1 : intensity === 'medium' ? 2 : 3} onChange={(e) => setIntensity(e.target.value === '1' ? 'low' : e.target.value === '2' ? 'medium' : 'extreme')} className="w-full accent-purple-500" />
-            </div>
-
             <button onClick={() => setActiveTab('export')} className="neon-btn w-full py-4 rounded-xl font-bold">Continue to Export</button>
           </div>
         )}
@@ -601,14 +471,20 @@ function App() {
         {activeTab === 'export' && (
           <div className="glass p-8 rounded-3xl text-center space-y-6">
             <h2 className="text-2xl font-bold">Render Studio</h2>
-            <p className="text-sm text-gray-400">Keep screen on. Ducking, SFX, and Captions are active.</p>
+            
+            {renderError && (
+              <div className="bg-red-500/20 border border-red-500/50 text-red-200 p-4 rounded-xl text-sm text-left">
+                {renderError}
+              </div>
+            )}
+
             {isRendering ? (
               <div className="space-y-2">
                 <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
                   <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
                 </div>
                 <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
-                <p className="text-xs text-purple-400 mt-2">🎤 Live Mic: {liveCaption || "Listening..."}</p>
+                <p className="text-xs text-gray-500">Keep screen on.</p>
               </div>
             ) : (
               <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
@@ -616,20 +492,10 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'settings' && (
-          <div className="glass p-6 rounded-3xl space-y-4">
-            <h2 className="text-xl font-bold">API Keys</h2>
-            <input type="password" placeholder="Gemini Key" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <input type="password" placeholder="YouTube Key" value={ytKey} onChange={(e) => setYtKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <input type="password" placeholder="Transcript Key" value={transcriptKey} onChange={(e) => setTranscriptKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <button onClick={saveSettings} className="neon-btn w-full py-3 rounded-xl font-bold">Save Keys</button>
-          </div>
-        )}
-
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
-        {['dashboard', 'analyze', 'editor', 'export', 'settings'].map(tab => (
+        {['dashboard', 'analyze', 'editor', 'export'].map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
             <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>{tab[0].toUpperCase()}</div>
             <span>{tab}</span>
