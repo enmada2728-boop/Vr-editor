@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#050508">
-<title>VR Editor AI — Pro</title>
+<title>VR Editor AI — PRO ENGINE 3.0</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -16,12 +16,6 @@
   .neon-text { background: linear-gradient(135deg, #8b5cf6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; }
   .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
-  .toggle-checkbox { display: none; }
-  .toggle-label { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 10px 0; border-bottom: 1px solid #27272a; font-size: 14px; font-weight: 600; }
-  .toggle-switch { position: relative; width: 44px; height: 24px; background: #3f3f46; border-radius: 12px; transition: 0.3s; }
-  .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: 0.3s; }
-  .toggle-checkbox:checked + .toggle-switch { background: #8b5cf6; }
-  .toggle-checkbox:checked + .toggle-switch::after { transform: translateX(20px); }
 </style>
 </head>
 <body>
@@ -33,42 +27,54 @@
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
+// --- PRO SFX GENERATOR ---
+const playSFX = (audioCtx, dest, type) => {
+  const t = audioCtx.currentTime;
+  if (type === 'boom') {
+    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+    osc.type = 'sine'; osc.frequency.setValueAtTime(150, t);
+    osc.frequency.exponentialRampToValueAtTime(40, t + 0.4);
+    gain.gain.setValueAtTime(0.8, t); gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
+    osc.connect(gain); gain.connect(dest); osc.start(t); osc.stop(t + 0.5);
+  } else if (type === 'whoosh') {
+    const bufferSize = audioCtx.sampleRate * 0.4;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = audioCtx.createBufferSource(); noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter(); filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(800, t); filter.frequency.exponentialRampToValueAtTime(200, t + 0.3);
+    const gain = audioCtx.createGain(); gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+    noise.connect(filter); filter.connect(gain); gain.connect(dest); noise.start(t);
+  }
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoDuration, setVideoDuration] = useState(0);
   
-  // Analysis Data
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
-  const [highlights, setHighlights] = useState([]);
-  const [deadSpace, setDeadSpace] = useState([]);
-  const [waveform, setWaveform] = useState([]);
+  const [timelineData, setTimelineData] = useState([]); // Array of Keep Segments
   
-  // Pro Settings
   const [ratio, setRatio] = useState('9:16');
   const [intensity, setIntensity] = useState('medium');
   const [font, setFont] = useState('Montserrat');
   const [captionColor, setCaptionColor] = useState('#8b5cf6');
-  const [textAnimation, setTextAnimation] = useState('bounce');
   
-  // Toggles
-  const [showSafeZone, setShowSafeZone] = useState(true);
   const [audioDucking, setAudioDucking] = useState(true);
-  const [impactEffects, setImpactEffects] = useState(true);
-  const [memeSFX, setMemeSFX] = useState(true);
-  const [beatSync, setBeatSync] = useState(true);
+  const [smartSFX, setSmartSFX] = useState(true);
+  const [proCamera, setProCamera] = useState(true);
+  const [flashCuts, setFlashCuts] = useState(true);
+  const [blurBg, setBlurBg] = useState(true);
+  const [colorGrade, setColorGrade] = useState(true);
   
-  // Assets & API
   const [customFontName, setCustomFontName] = useState('');
   const [musicUrl, setMusicUrl] = useState(null);
-  const [musicVolume, setMusicVolume] = useState(0.3);
-  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
-  const [ytKey, setYtKey] = useState(localStorage.getItem('vr_editor_yt') || '');
-  const [transcriptKey, setTranscriptKey] = useState(localStorage.getItem('vr_editor_transcript') || '');
+  const [musicVolume, setMusicVolume] = useState(0.2);
   
-  // Render State
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
   const [renderStatus, setRenderStatus] = useState('');
@@ -76,24 +82,14 @@ function App() {
 
   const videoRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
-
-  const saveSettings = () => {
-    localStorage.setItem('vr_editor_gemini', geminiKey);
-    localStorage.setItem('vr_editor_yt', ytKey);
-    localStorage.setItem('vr_editor_transcript', transcriptKey);
-    alert("All API Keys saved!");
-  };
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setVideoFile(file);
-      setVideoUrl(URL.createObjectURL(file));
-      setHighlights([]); setDeadSpace([]); setWaveform([]);
-      setRenderError(''); setRenderStatus('');
-      setAnalyzeProgress(0);
+      setVideoFile(file); setVideoUrl(URL.createObjectURL(file));
+      setTimelineData([]);
+      setRenderError(''); setRenderStatus(''); setAnalyzeProgress(0);
       setActiveTab('analyze');
     }
   };
@@ -104,40 +100,35 @@ function App() {
     try {
       const url = URL.createObjectURL(file);
       const loadedFont = new FontFace('UserCustomFont', `url(${url})`);
-      await loadedFont.load();
-      document.fonts.add(loadedFont);
-      setCustomFontName('UserCustomFont');
+      await loadedFont.load(); document.fonts.add(loadedFont); setCustomFontName('UserCustomFont');
       alert("Custom font loaded!");
-    } catch (err) { alert("Failed to load font. Make sure it is a .ttf or .otf file."); }
+    } catch (err) { alert("Failed to load font."); }
   };
 
-  const drawTimeline = (duration, wf, hl, ds) => {
+  const drawTimeline = (duration, data) => {
     const canvas = document.getElementById('timelineCanvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const w = canvas.width; const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#1c1c21'; ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-    ds.forEach(d => { ctx.fillRect((d.start / duration) * w, 0, ((d.end - d.start) / duration) * w, h); });
-    ctx.fillStyle = 'rgba(139, 92, 246, 0.5)';
-    hl.forEach(hl => { ctx.fillRect((hl.time / duration) * w, 0, ((hl.end - hl.time) / duration) * w, h); });
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    wf.forEach((val, i) => {
-      let x = (i / wf.length) * w;
-      let amp = (val / 255) * h;
-      ctx.fillRect(x, h/2 - amp/2, 1, amp); 
+    
+    ctx.fillStyle = '#1c1c21'; ctx.fillRect(0, 0, w, h); // Default is cut
+    
+    // Draw keep segments
+    data.forEach(seg => {
+      ctx.fillStyle = 'rgba(139, 92, 246, 0.6)';
+      ctx.fillRect((seg.start / duration) * w, 0, ((seg.end - seg.start) / duration) * w, h); 
     });
   };
 
   useEffect(() => {
-    if (videoDuration > 0) drawTimeline(videoDuration, waveform, highlights, deadSpace);
-  }, [highlights, deadSpace, waveform, videoDuration]);
+    if (videoDuration > 0) drawTimeline(videoDuration, timelineData);
+  }, [timelineData, videoDuration]);
 
+  // --- ULTIMATE SMART CUT ENGINE ---
   const startAnalysis = async () => {
     if (!videoRef.current) return;
-    setIsAnalyzing(true);
-    setHighlights([]); setDeadSpace([]); setWaveform([]);
+    setIsAnalyzing(true); setTimelineData([]);
     
     const video = videoRef.current;
     video.muted = false; video.currentTime = 0;
@@ -147,12 +138,12 @@ function App() {
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     
     const source = audioCtx.createMediaElementSource(video);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
+    const analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
     source.connect(analyser);
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    let detectedHighlights = [], detectedDeadSpace = [], detectedWaveform = [], silenceStart = null;
+    let frames = [];
+    
     const mCanvas = document.getElementById('motionCanvas');
     const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
     let prevFrameData = null;
@@ -162,17 +153,52 @@ function App() {
     const analyzeLoop = () => {
       if (video.paused || video.ended) {
         setIsAnalyzing(false); setAnalyzeProgress(100); source.disconnect();
-        if (silenceStart && video.currentTime - silenceStart > 2) detectedDeadSpace.push({ start: silenceStart, end: video.currentTime });
-        setHighlights(detectedHighlights); setDeadSpace(detectedDeadSpace); setWaveform(detectedWaveform);
-        setActiveTab('editor');
-        return;
+        
+        // --- BUILD THE EDL (KEEP SEGMENTS) ---
+        let segments = [];
+        let isKeeping = false;
+        let keepStart = 0;
+        let silenceCounter = 0;
+        
+        frames.forEach((f, index) => {
+          // We want to KEEP if there is talking (volume > 15) OR action (motion > 100)
+          const isActive = f.volume > 15 || f.motion > 100;
+          
+          if (isActive) {
+            if (!isKeeping) {
+              // Start a new keep segment
+              isKeeping = true;
+              // Backtrack a little to catch the breath before they speak
+              keepStart = Math.max(0, f.time - 0.5); 
+            }
+            silenceCounter = 0; // Reset silence timer
+          } else {
+            if (isKeeping) {
+              silenceCounter++;
+              // If it's been quiet for more than 1.5 seconds (15 frames at 10fps), stop keeping
+              if (silenceCounter > 15) {
+                isKeeping = false;
+                let keepEnd = f.time - 1.5; // Cut the trailing silence
+                if (keepEnd > keepStart + 0.5) { // Only add if longer than 0.5s
+                  segments.push({ start: keepStart, end: keepEnd });
+                }
+              }
+            }
+          }
+        });
+        
+        // Add final segment if we ended on a keep
+        if (isKeeping) {
+          segments.push({ start: keepStart, end: video.duration });
+        }
+
+        setTimelineData(segments);
+        setActiveTab('editor'); return;
       }
 
       analyser.getByteFrequencyData(dataArray);
       let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
       const avgVolume = sum / dataArray.length;
-      
-      if (detectedWaveform.length < (video.currentTime * 10)) detectedWaveform.push(avgVolume);
 
       mCtx.drawImage(video, 0, 0, 64, 64);
       const currentFrameData = mCtx.getImageData(0, 0, 64, 64).data;
@@ -184,17 +210,9 @@ function App() {
       }
       prevFrameData = currentFrameData;
 
-      if (avgVolume < 15 && motionScore < 100) {
-        if (!silenceStart) silenceStart = video.currentTime;
-      } else {
-        if (silenceStart && video.currentTime - silenceStart > 2) detectedDeadSpace.push({ start: silenceStart, end: video.currentTime });
-        silenceStart = null;
-      }
-
-      if (avgVolume > 60 || motionScore > 500) {
-        if (detectedHighlights.length === 0 || video.currentTime - detectedHighlights[detectedHighlights.length-1].time > 2) {
-           detectedHighlights.push({ time: video.currentTime, end: video.currentTime + 3 });
-        }
+      // Store frame data (sample at 10fps)
+      if (frames.length < video.currentTime * 10) {
+        frames.push({ time: video.currentTime, volume: avgVolume, motion: motionScore });
       }
 
       setAnalyzeProgress((video.currentTime / video.duration) * 100);
@@ -204,59 +222,44 @@ function App() {
   };
 
   const renderVideo = async () => {
-    setIsRendering(true); setRenderProgress(0); setRenderError('');
-    setRenderStatus('Loading video...');
+    setIsRendering(true); setRenderProgress(0); setRenderError(''); setRenderStatus('Loading...');
     
     try {
       const video = document.createElement('video');
-      video.src = videoUrl;
-      video.crossOrigin = 'anonymous';
-      video.playsInline = true;
-      video.style.display = 'none';
-      document.body.appendChild(video); // Crucial for Android
+      video.src = videoUrl; video.crossOrigin = 'anonymous'; video.playsInline = true;
+      video.style.display = 'none'; document.body.appendChild(video);
 
-      // Safe wait for metadata
-      if (video.readyState < 1) {
-        await new Promise((resolve) => {
-          video.onloadedmetadata = resolve;
-          setTimeout(resolve, 2000); // Failsafe
-        });
-      }
+      if (video.readyState < 1) await new Promise((r) => { video.onloadedmetadata = r; setTimeout(r, 2000); });
 
-      setRenderStatus('Setting up canvas...');
+      setRenderStatus('Preparing Pro Canvas...');
       const canvas = document.getElementById('renderCanvas');
       const ctx = canvas.getContext('2d');
       
-      if (ratio === '9:16') { canvas.width = 720; canvas.height = 1280; }
-      else { canvas.width = 1280; canvas.height = 720; }
+      if (ratio === '9:16') { canvas.width = 1080; canvas.height = 1920; }
+      else { canvas.width = 1920; canvas.height = 1080; }
 
       await document.fonts.ready;
 
-      setRenderStatus('Connecting audio...');
+      setRenderStatus('Connecting Audio...');
       const audioCtx = audioCtxRef.current;
       const dest = audioCtx.createMediaStreamDestination();
       
       const gameSource = audioCtx.createMediaElementSource(video);
-      gameSource.connect(dest);
-      gameSource.connect(audioCtx.destination);
+      gameSource.connect(dest); gameSource.connect(audioCtx.destination);
 
       let musicAudio = null, musicGain = null;
       if (musicUrl) {
         musicAudio = new Audio(musicUrl); musicAudio.loop = true;
         const musicSource = audioCtx.createMediaElementSource(musicAudio);
-        musicGain = audioCtx.createGain();
-        musicGain.gain.value = musicVolume;
-        musicSource.connect(musicGain);
-        musicGain.connect(dest);
-        musicGain.connect(audioCtx.destination);
+        musicGain = audioCtx.createGain(); musicGain.gain.value = musicVolume;
+        musicSource.connect(musicGain); musicGain.connect(dest); musicGain.connect(audioCtx.destination);
       }
 
       const stream = canvas.captureStream(30);
       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-      setRenderStatus('Starting recorder...');
+      setRenderStatus('Starting...');
       let options = { mimeType: 'video/webm;codecs=vp9,opus' };
-      if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm;codecs=vp8,opus' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' };
 
       const recorder = new MediaRecorder(stream, options);
@@ -264,156 +267,143 @@ function App() {
 
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = () => {
-        if (musicAudio) musicAudio.pause();
-        document.body.removeChild(video);
+        if (musicAudio) musicAudio.pause(); document.body.removeChild(video);
         const blob = new Blob(chunksRef.current, { type: options.mimeType });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); 
-        a.href = url; 
-        a.download = `VR_Edit_${ratio.replace(':','x')}.webm`; 
-        a.click();
-        setIsRendering(false); setRenderProgress(100);
-        setRenderStatus('Done! Check your downloads.');
+        const a = document.createElement('a'); a.href = url; a.download = `VR_ProEdit.webm`; a.click();
+        setIsRendering(false); setRenderProgress(100); setRenderStatus('Done!');
       };
 
-      video.currentTime = 0;
-      video.play().catch(e => console.log("Play error:", e));
+      video.currentTime = timelineData.length > 0 ? timelineData[0].start : 0;
+      video.play().catch(e => console.log(e));
       if (musicAudio) musicAudio.play();
-      
-      // Wait a moment for playback to actually start before recording
       await new Promise(r => setTimeout(r, 500));
       
-      recorder.start();
-      setRenderStatus('Rendering...');
+      recorder.start(); setRenderStatus('Rendering PRO Edit...');
 
-      let lastHighlightTime = -10;
-      let shakeFrames = 0;
-      let flashFrames = 0;
-      let captionIndex = 0;
+      let currentSegIndex = 0;
+      let isSeeking = false;
       
-      const analyser = audioCtx.createAnalyser();
-      gameSource.connect(analyser);
+      let currentZoom = 1.0, targetZoom = 1.0;
+      let cameraDrift = 0;
+      let flashAlpha = 0;
+      let shakeX = 0, shakeY = 0, shakeRot = 0;
+      let textScale = 0.5, textOpacity = 0;
+      let lastSFXTime = -10;
+      
+      const analyser = audioCtx.createAnalyser(); gameSource.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       const renderLoop = () => {
-        if (video.paused || video.ended) { 
-          recorder.stop(); 
-          return; 
+        if (video.paused || video.ended || isSeeking) return;
+        
+        // If we have timeline data, enforce the cuts
+        if (timelineData.length > 0) {
+           const currentSeg = timelineData[currentSegIndex];
+           
+           // If we reached the end of the current keep segment, jump to the next!
+           if (video.currentTime >= currentSeg.end) {
+              currentSegIndex++;
+              if (currentSegIndex < timelineData.length) {
+                 isSeeking = true;
+                 if (flashCuts) flashAlpha = 0.8; // Flash on cut
+                 
+                 // Seek to the next keep segment
+                 video.currentTime = timelineData[currentSegIndex].start;
+                 
+                 // Wait for seek to complete before resuming loop
+                 video.onseeked = () => { isSeeking = false; requestAnimationFrame(renderLoop); };
+                 return;
+              } else {
+                 recorder.stop(); // We finished all keep segments
+                 return;
+              }
+           }
+        } else if (video.ended) {
+            recorder.stop();
+            return;
         }
 
         const time = video.currentTime;
         
+        // Ducking
         if (audioDucking && musicGain) {
           analyser.getByteFrequencyData(dataArray);
           let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-          musicGain.gain.value = (sum / dataArray.length) > 50 ? 0.05 : musicVolume;
+          musicGain.gain.setTargetAtTime((sum / dataArray.length) > 45 ? 0.05 : musicVolume, audioCtx.currentTime, 0.3);
         }
 
-        const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
-        const newHighlight = isHighlight && (time - lastHighlightTime > 2);
+        // Pro Camera Motion
+        if (proCamera) cameraDrift = Math.sin(time * 0.5) * 15;
         
-        if (newHighlight) {
-          lastHighlightTime = time;
-          if (impactEffects) { shakeFrames = 15; flashFrames = 5; }
-          if (memeSFX) {
-             const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
-             osc.type = 'sine'; osc.frequency.setValueAtTime(150, audioCtx.currentTime);
-             osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.3);
-             gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-             gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
-             osc.connect(gain); gain.connect(dest); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
-          }
-        }
+        // Decay Shake
+        if (shakeX > 0) shakeX *= 0.8;
+        if (shakeY > 0) shakeY *= 0.8;
+        if (shakeRot > 0) shakeRot *= 0.8;
 
+        // --- DRAWING ---
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        
-        if (shakeFrames > 0) {
-          ctx.translate((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20);
-          shakeFrames--;
-        }
+        if (colorGrade) ctx.filter = 'contrast(1.1) saturate(1.2)';
 
-        if (beatSync && musicUrl) {
-          const beatScale = 1 + Math.abs(Math.sin(time * Math.PI)) * 0.03;
-          ctx.translate(canvas.width/2, canvas.height/2); ctx.scale(beatScale, beatScale); ctx.translate(-canvas.width/2, -canvas.height/2);
-        }
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        if (isHighlight) {
-          let zoom = 1.08 + Math.sin(time * 10) * 0.05;
-          if (intensity === 'extreme') zoom = 1.15 + Math.sin(time * 10) * 0.05;
-          
-          ctx.translate(canvas.width / 2, canvas.height / 2); ctx.scale(zoom, zoom); ctx.translate(-canvas.width / 2, -canvas.height / 2);
-
-          ctx.fillStyle = captionColor;
-          ctx.fillRect(canvas.width * 0.05, canvas.height * 0.8, canvas.width * 0.9, 100);
-          
-          ctx.fillStyle = 'white';
-          ctx.font = customFontName ? `70px "${customFontName}"` : `bold 60px ${font}`;
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          
-          let displayCaption = customCaptions[captionIndex % customCaptions.length].toUpperCase();
+        // Blurred Background (For Shorts)
+        if (ratio === '9:16' && blurBg) {
           ctx.save();
-          let textX = canvas.width / 2; let textY = canvas.height * 0.8 + 50;
-
-          if (textAnimation === 'bounce') textY -= Math.abs(Math.sin(time * 15)) * 20;
-          else if (textAnimation === 'shake') { textX += (Math.random() - 0.5) * 15; textY += (Math.random() - 0.5) * 15; }
-
-          ctx.fillText(displayCaption.substring(0, 20), textX, textY);
+          ctx.filter = 'blur(30px) brightness(0.4)';
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           ctx.restore();
-          
-          if (time % 2 < 0.1) captionIndex++;
         }
 
-        if (flashFrames > 0) {
-          ctx.fillStyle = `rgba(255, 255, 255, ${flashFrames * 0.15})`;
+        // Main Video
+        ctx.save();
+        ctx.translate(canvas.width / 2 + cameraDrift + (Math.random() - 0.5) * shakeX, canvas.height / 2 + (Math.random() - 0.5) * shakeY);
+        ctx.rotate((Math.random() - 0.5) * shakeRot);
+        ctx.scale(currentZoom, currentZoom);
+        
+        const videoRatio = video.videoWidth / video.videoHeight;
+        const canvasRatio = canvas.width / canvas.height;
+        let drawWidth = canvas.width, drawHeight = canvas.height;
+        if (videoRatio > canvasRatio) drawHeight = canvas.width / videoRatio;
+        else drawWidth = canvas.height * videoRatio;
+        
+        ctx.drawImage(video, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        ctx.restore();
+
+        // Text & SFX (Triggered on cuts or loud moments)
+        if (flashAlpha > 0) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.filter = 'none';
+          ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
           ctx.fillRect(0, 0, canvas.width, canvas.height);
-          flashFrames--;
+          flashAlpha -= 0.15;
         }
 
-        if (showSafeZone && ratio === '9:16') {
-          ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)'; ctx.lineWidth = 4; ctx.setLineDash([20, 20]);
-          ctx.strokeRect(40, 150, canvas.width - 80, canvas.height - 400);
-          ctx.setLineDash([]);
-        }
+        // Progress (Calculate based on segments, not raw time)
+        let totalKeepTime = timelineData.reduce((acc, seg) => acc + (seg.end - seg.start), 0);
+        let currentKeepTime = timelineData.slice(0, currentSegIndex).reduce((acc, seg) => acc + (seg.end - seg.start), 0) + (time - timelineData[currentSegIndex].start);
+        setRenderProgress((currentKeepTime / totalKeepTime) * 100);
 
-        if (intensity !== 'low') {
-          const currentDead = deadSpace.find(d => time >= d.start && time <= d.end);
-          if (currentDead) {
-             video.currentTime = currentDead.end;
-          }
-          else if (!isHighlight && intensity === 'extreme') video.currentTime += 0.2;
-        }
-
-        setRenderProgress((video.currentTime / video.duration) * 100);
         requestAnimationFrame(renderLoop);
       };
       renderLoop();
       
     } catch (error) {
-      console.error(error);
-      setRenderError("Render Error: " + error.message);
-      setIsRendering(false);
-      setRenderStatus('');
+      console.error(error); setRenderError("Render Error: " + error.message); setIsRendering(false);
     }
   };
-
-  // Just in case customCaptions gets lost
-  const customCaptions = ["EPIC MOMENT", "NO WAY", "CLUTCH"];
 
   return (
     <div className="min-h-screen pb-24">
       <header className="sticky top-0 z-50 glass px-6 py-4 flex justify-between items-center">
         <h1 className="text-xl font-extrabold tracking-tight">VR Editor <span className="neon-text">AI</span></h1>
-        <div className="text-xs font-bold px-3 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">● PRO</div>
+        <div className="text-xs font-bold px-3 py-1 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">● PRO 3.0</div>
       </header>
 
       <main className="max-w-3xl mx-auto p-4 space-y-6">
         
         {activeTab === 'dashboard' && (
           <div className="glass p-8 rounded-3xl text-center space-y-6">
-            <h2 className="text-3xl font-extrabold tracking-tight">Create a <span className="neon-text">Masterpiece</span></h2>
-            <p className="text-gray-400 text-sm">Import raw VR gameplay. AI finds loud/fast moments, cuts silence, and applies effects.</p>
+            <h2 className="text-3xl font-extrabold tracking-tight">True Auto-Cutter</h2>
+            <p className="text-gray-400 text-sm">Cuts out ALL dead space, silence, and loading screens automatically.</p>
             <label className="neon-btn cursor-pointer block w-full py-4 rounded-xl font-bold text-lg">
               <span>Import Video</span>
               <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
@@ -433,7 +423,7 @@ function App() {
                 </div>
               </div>
             </div>
-            {!isAnalyzing && highlights.length === 0 && (
+            {!isAnalyzing && timelineData.length === 0 && (
               <button onClick={startAnalysis} className="neon-btn w-full py-4 rounded-xl font-bold">Start Analysis</button>
             )}
           </div>
@@ -442,17 +432,22 @@ function App() {
         {activeTab === 'editor' && (
           <div className="space-y-4">
             <div className="glass p-5 rounded-3xl">
-              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline Map</h3>
+              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline (EDL)</h3>
               <canvas id="timelineCanvas" className="w-full h-[100px] rounded-lg" />
+              <p className="text-xs text-gray-500 mt-2">Purple = Keep. Grey = Cut (Silence/Loading).</p>
             </div>
 
             <div className="glass p-5 rounded-3xl space-y-2">
-              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Pro Features</h3>
-              <label className="toggle-label">Safe Zone Overlay <input type="checkbox" className="toggle-checkbox" checked={showSafeZone} onChange={(e) => setShowSafeZone(e.target.checked)} /><div className="toggle-switch"></div></label>
-              <label className="toggle-label">Audio Ducking <input type="checkbox" className="toggle-checkbox" checked={audioDucking} onChange={(e) => setAudioDucking(e.target.checked)} /><div className="toggle-switch"></div></label>
-              <label className="toggle-label">Impact Effects <input type="checkbox" className="toggle-checkbox" checked={impactEffects} onChange={(e) => setImpactEffects(e.target.checked)} /><div className="toggle-switch"></div></label>
-              <label className="toggle-label">Meme SFX <input type="checkbox" className="toggle-checkbox" checked={memeSFX} onChange={(e) => setMemeSFX(e.target.checked)} /><div className="toggle-switch"></div></label>
-              <label className="toggle-label">Beat Sync Pulse <input type="checkbox" className="toggle-checkbox" checked={beatSync} onChange={(e) => setBeatSync(e.target.checked)} /><div className="toggle-switch"></div></label>
+              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Visuals & FX</h3>
+              <label className="flex items-center justify-between p-2 border-b border-gray-800 text-sm font-semibold cursor-pointer">
+                Blurred Background <input type="checkbox" checked={blurBg} onChange={(e) => setBlurBg(e.target.checked)} className="accent-purple-500 w-5 h-5" />
+              </label>
+              <label className="flex items-center justify-between p-2 border-b border-gray-800 text-sm font-semibold cursor-pointer">
+                Flash Cuts <input type="checkbox" checked={flashCuts} onChange={(e) => setFlashCuts(e.target.checked)} className="accent-purple-500 w-5 h-5" />
+              </label>
+              <label className="flex items-center justify-between p-2 text-sm font-semibold cursor-pointer">
+                Pro Camera Motion <input type="checkbox" checked={proCamera} onChange={(e) => setProCamera(e.target.checked)} className="accent-purple-500 w-5 h-5" />
+              </label>
             </div>
 
             <div className="glass p-5 rounded-3xl space-y-4">
@@ -474,13 +469,7 @@ function App() {
         {activeTab === 'export' && (
           <div className="glass p-8 rounded-3xl text-center space-y-6">
             <h2 className="text-2xl font-bold">Render Studio</h2>
-            
-            {renderError && (
-              <div className="bg-red-500/20 border border-red-500/50 text-red-200 p-4 rounded-xl text-sm text-left">
-                {renderError}
-              </div>
-            )}
-
+            {renderError && <div className="bg-red-500/20 border border-red-500/50 text-red-200 p-4 rounded-xl text-sm text-left">{renderError}</div>}
             {isRendering ? (
               <div className="space-y-2">
                 <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
@@ -490,25 +479,15 @@ function App() {
                 <p className="text-xs text-yellow-400 font-bold mt-2">{renderStatus}</p>
               </div>
             ) : (
-              <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
+              <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render PRO Video</button>
             )}
-          </div>
-        )}
-
-        {activeTab === 'settings' && (
-          <div className="glass p-6 rounded-3xl space-y-4">
-            <h2 className="text-xl font-bold">API Keys</h2>
-            <input type="password" placeholder="Gemini Key" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <input type="password" placeholder="YouTube Key" value={ytKey} onChange={(e) => setYtKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <input type="password" placeholder="Transcript Key" value={transcriptKey} onChange={(e) => setTranscriptKey(e.target.value)} className="w-full bg-gray-900 p-3 rounded-xl border border-gray-800 text-white" />
-            <button onClick={saveSettings} className="neon-btn w-full py-3 rounded-xl font-bold">Save Keys</button>
           </div>
         )}
 
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
-        {['dashboard', 'analyze', 'editor', 'export', 'settings'].map(tab => (
+        {['dashboard', 'analyze', 'editor', 'export'].map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
             <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>{tab[0].toUpperCase()}</div>
             <span>{tab}</span>
