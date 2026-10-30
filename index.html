@@ -1,1 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#050508">
+<title>VR Editor AI — Pro</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; background-color: #050508; color: #f8fafc; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  .glass { background: rgba(20, 20, 28, 0.7); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
+  .neon-text { background: linear-gradient(135deg, #8b5cf6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; }
+  .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
+  .timeline-track { background: #121215; border: 1px solid #27272a; position: relative; height: 60px; border-radius: 8px; overflow: hidden; }
+  .timeline-highlight { background: rgba(139, 92, 246, 0.4); border: 1px solid #8b5cf6; position: absolute; top: 0; bottom: 0; }
+  .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; z-index: 20; box-shadow: 0 0 8px #ef4444; }
+  .waveform-bar { width: 2px; background: #8b5cf6; margin-right: 1px; display: inline-block; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<!-- Hidden elements for processing -->
+<canvas id="motionCanvas" width="64" height="64" class="hidden"></canvas>
+<canvas id="renderCanvas" class="hidden"></canvas>
 
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoUrl, setVideoUrl] = useState('');
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState(0);
+  const [highlights, setHighlights] = useState([]);
+  
+  // Settings
+  const [ratio, setRatio] = useState('9:16'); // 9:16 Shorts, 16:9 Long
+  const [intensity, setIntensity] = useState('medium'); // low, medium, extreme
+  const [style, setStyle] = useState('gaming'); // gaming, meme
+  
+  // Render State
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderProgress, setRenderProgress] = useState(0);
+
+  const videoRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
+
+  // --- File Handling ---
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setVideoFile(file);
+      setVideoUrl(URL.createObjectURL(file));
+      setHighlights([]);
+      setAnalyzeProgress(0);
+      setActiveTab('analyze');
+    }
+  };
+
+  const handleVideoLoaded = () => {
+    if (videoRef.current) {
+      setVideoDuration(videoRef.current.duration);
+    }
+  };
+
+  // --- AI Analysis Engine (Streaming) ---
+  const startAnalysis = async () => {
+    if (!videoRef.current) return;
+    setIsAnalyzing(true);
+    setHighlights([]);
+    
+    const video = videoRef.current;
+    video.muted = false;
+    video.currentTime = 0;
+    
+    // Set up Audio Analyser
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const audioCtx = audioCtxRef.current;
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    
+    const source = audioCtx.createMediaElementSource(video);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    // Do NOT connect to destination to keep it silent during analysis
+    
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    const detectedHighlights = [];
+    let lastMotionTime = 0;
+    
+    // Motion Canvas
+    const mCanvas = document.getElementById('motionCanvas');
+    const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
+    let prevFrameData = null;
+
+    video.play();
+
+    const analyzeLoop = () => {
+      if (video.paused || video.ended) {
+        // Analysis complete
+        setIsAnalyzing(false);
+        setAnalyzeProgress(100);
+        // Clean up audio connections
+        source.disconnect();
+        // Merge nearby highlights
+        const merged = [];
+        detectedHighlights.sort((a, b) => a.time - b.time).forEach(h => {
+          if (merged.length === 0) merged.push(h);
+          else {
+            const last = merged[merged.length - 1];
+            if (h.time - last.time < 3) {
+              last.end = h.time + 2;
+              last.score = Math.max(last.score, h.score);
+            } else {
+              merged.push(h);
+            }
+          }
+        });
+        setHighlights(merged);
+        setActiveTab('editor');
+        return;
+      }
+
+      // 1. Audio Analysis (Loudness)
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+      const avgVolume = sum / dataArray.length;
+
+      // 2. Motion Analysis
+      mCtx.drawImage(video, 0, 0, 64, 64);
+      const currentFrameData = mCtx.getImageData(0, 0, 64, 64).data;
+      let motionScore = 0;
+      if (prevFrameData) {
+        for (let i = 0; i < currentFrameData.length; i += 4) {
+          const diff = Math.abs(currentFrameData[i] - prevFrameData[i]);
+          if (diff > 50) motionScore++;
+        }
+      }
+      prevFrameData = currentFrameData;
+
+      // Record Highlight if Loud OR Fast Motion
+      if (avgVolume > 60 || motionScore > 500) {
+        // Prevent spamming highlights every frame
+        if (detectedHighlights.length === 0 || video.currentTime - detectedHighlights[detectedHighlights.length-1].time > 2) {
+           detectedHighlights.push({ time: video.currentTime, end: video.currentTime + 3, score: avgVolume + motionScore });
+        }
+      }
+
+      setAnalyzeProgress((video.currentTime / video.duration) * 100);
+      requestAnimationFrame(analyzeLoop);
+    };
+
+    analyzeLoop();
+  };
+
+  // --- Render Engine (MediaRecorder) ---
+  const renderVideo = async () => {
+    if (!videoRef.current) return;
+    setIsRendering(true);
+    setRenderProgress(0);
+    
+    const video = videoRef.current;
+    const canvas = document.getElementById('renderCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set Resolution based on aspect ratio
+    if (ratio === '9:16') { canvas.width = 1080; canvas.height = 1920; }
+    else { canvas.width = 1920; canvas.height = 1080; }
+
+    const stream = canvas.captureStream(30);
+    
+    // Audio Routing for recording
+    const audioCtx = audioCtxRef.current;
+    const source = audioCtx.createMediaElementSource(video);
+    const dest = audioCtx.createMediaStreamDestination();
+    source.connect(dest);
+    source.connect(audioCtx.destination); // Allow hearing it
+    dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+    mediaRecorderRef.current = recorder;
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `VR_Edit_${ratio.replace(':','x')}.webm`;
+      a.click();
+      setIsRendering(false);
+      setRenderProgress(100);
+    };
+
+    video.currentTime = 0;
+    video.play();
+    recorder.start();
+
+    const renderLoop = () => {
+      if (video.paused || video.ended) {
+        recorder.stop();
+        return;
+      }
+
+      const time = video.currentTime;
+
+      // 1. Draw Frame
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // 2. Determine if we are in a highlight
+      const isHighlight = highlights.some(h => time >= h.time && time <= h.end);
+
+      // 3. Apply Effects based on Style & Intensity
+      if (style === 'gaming') {
+        // Dynamic Zoom
+        let zoom = 1.0;
+        if (isHighlight && intensity !== 'low') {
+           // Create a pulse effect
+           const pulse = Math.sin(time * 10) * 0.05; 
+           zoom = intensity === 'extreme' ? 1.15 + pulse : 1.08 + pulse;
+        }
+        
+        if (zoom !== 1.0) {
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.scale(zoom, zoom);
+          ctx.translate(-canvas.width / 2, -canvas.height / 2);
+        }
+
+        // Captions (Simulated)
+        if (isHighlight) {
+          ctx.fillStyle = '#8b5cf6';
+          ctx.fillRect(canvas.width * 0.1, canvas.height * 0.8, canvas.width * 0.8, 100);
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 60px Inter';
+          ctx.textAlign = 'center';
+          ctx.fillText("EPIC MOMENT", canvas.width / 2, canvas.height * 0.8 + 70);
+        }
+      }
+
+      // 4. Fast-Forwarding (Removing boring parts)
+      // If we are NOT in a highlight and intensity is High/Extreme, skip forward
+      if (!isHighlight && intensity !== 'low') {
+         video.currentTime += 0.5; // Skip ahead 0.5s per frame
+      }
+
+      setRenderProgress((video.currentTime / video.duration) * 100);
+      requestAnimationFrame(renderLoop);
+    };
+
+    renderLoop();
+  };
+
+  return (
+    <div className="min-h-screen pb-24">
+      {/* Header */}
+      <header className="sticky top-0 z-50 glass px-6 py-4 flex justify-between items-center">
+        <h1 className="text-xl font-extrabold tracking-tight">VR Editor <span className="neon-text">AI</span></h1>
+        <div className="text-xs font-bold px-3 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">● RENDER READY</div>
+      </header>
+
+      <main className="max-w-3xl mx-auto p-4 space-y-6">
+        
+        {/* DASHBOARD */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6 animate-[fadeIn_0.3s_ease]">
+            <div className="glass p-8 rounded-3xl text-center space-y-6 relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-blue-500"></div>
+              <h2 className="text-3xl font-extrabold tracking-tight">Create a <span className="neon-text">Masterpiece</span></h2>
+              <p className="text-gray-400 text-sm max-w-xs mx-auto">Import raw VR gameplay. Our streaming AI finds the loudest, fastest moments and edits it for you.</p>
+              
+              <label className="neon-btn cursor-pointer inline-block w-full py-4 rounded-xl font-bold text-lg">
+                <span>Import Video</span>
+                <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
+              </label>
+              
+              <div className="flex justify-between text-xs text-gray-500 font-mono">
+                <span>Supported: MP4, WebM</span>
+                <span>Max: 1.5 GB</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ANALYZE */}
+        {activeTab === 'analyze' && (
+          <div className="space-y-6 animate-[fadeIn_0.3s_ease]">
+            <div className="glass p-6 rounded-3xl">
+              <h2 className="text-xl font-bold mb-2">AI Video Analysis</h2>
+              <p className="text-sm text-gray-400 mb-6">Playing video to map audio spikes and motion detection. Keep the app open.</p>
+              
+              <div className="h-32 bg-black/50 rounded-xl mb-4 flex items-center justify-center border border-gray-800">
+                <video ref={videoRef} src={videoUrl} onLoadedMetadata={handleVideoLoaded} className="hidden" playsInline crossOrigin="anonymous" />
+                <div className="text-center">
+                  <p className="text-sm font-mono text-purple-400 mb-2">{Math.floor(analyzeProgress)}% Analyzed</p>
+                  <div className="w-48 h-2 bg-gray-800 rounded-full mx-auto overflow-hidden">
+                    <div className="h-full bg-purple-500 transition-all" style={{ width: `${analyzeProgress}%` }}></div>
+                  </div>
+                </div>
+              </div>
+
+              {!isAnalyzing && highlights.length === 0 && (
+                <button onClick={startAnalysis} className="neon-btn w-full py-4 rounded-xl font-bold">Start Real-Time Analysis</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* EDITOR */}
+        {activeTab === 'editor' && (
+          <div className="space-y-4 animate-[fadeIn_0.3s_ease]">
+            <div className="glass p-5 rounded-3xl space-y-4">
+              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400">Format</h3>
+              <div className="flex gap-3">
+                <button onClick={() => setRatio('9:16')} className={`flex-1 py-3 rounded-xl font-bold border ${ratio === '9:16' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Shorts (9:16)</button>
+                <button onClick={() => setRatio('16:9')} className={`flex-1 py-3 rounded-xl font-bold border ${ratio === '16:9' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Long (16:9)</button>
+              </div>
+            </div>
+
+            <div className="glass p-5 rounded-3xl space-y-4">
+              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400">Style</h3>
+              <div className="flex gap-3">
+                <button onClick={() => setStyle('gaming')} className={`flex-1 py-3 rounded-xl font-bold border ${style === 'gaming' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Gaming</button>
+                <button onClick={() => setStyle('meme')} className={`flex-1 py-3 rounded-xl font-bold border ${style === 'meme' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>Meme</button>
+              </div>
+            </div>
+
+            <div className="glass p-5 rounded-3xl space-y-4">
+              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400">Intensity (Cut Pace)</h3>
+              <input type="range" min="1" max="3" value={intensity === 'low' ? 1 : intensity === 'medium' ? 2 : 3} onChange={(e) => setIntensity(e.target.value === '1' ? 'low' : e.target.value === '2' ? 'medium' : 'extreme')} className="w-full accent-purple-500" />
+              <div className="flex justify-between text-xs text-gray-400 font-semibold"><span>LOW</span><span>MEDIUM</span><span>EXTREME</span></div>
+            </div>
+
+            {/* Timeline Visualizer */}
+            <div className="glass p-5 rounded-3xl">
+              <h3 className="font-bold text-sm uppercase tracking-wider text-gray-400 mb-4">Timeline Map</h3>
+              <div className="timeline-track">
+                {highlights.map((h, i) => (
+                  <div key={i} className="timeline-highlight" style={{ left: `${(h.time / videoDuration) * 100}%`, width: `${((h.end - h.time) / videoDuration) * 100}%` }} />
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-2">Purple areas are loud/action moments. Everything else gets cut.</p>
+            </div>
+
+            <button onClick={() => setActiveTab('export')} className="neon-btn w-full py-4 rounded-xl font-bold mt-4">Continue to Export</button>
+          </div>
+        )}
+
+        {/* EXPORT */}
+        {activeTab === 'export' && (
+          <div className="space-y-6 animate-[fadeIn_0.3s_ease]">
+            <div className="glass p-8 rounded-3xl text-center space-y-6">
+              <h2 className="text-2xl font-bold">Render Studio</h2>
+              <p className="text-sm text-gray-400">Render locally. Do not lock your screen or switch apps.</p>
+              
+              <div className="bg-black/50 p-5 rounded-2xl text-left text-sm space-y-3 font-mono">
+                <p><span className="text-gray-500">Format:</span> {ratio}</p>
+                <p><span className="text-gray-500">Codec:</span> WebM / VP9</p>
+                <p><span className="text-gray-500">Effects:</span> {style.toUpperCase()} / {intensity.toUpperCase()}</p>
+              </div>
+
+              {isRendering ? (
+                <div className="space-y-2">
+                  <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
+                  </div>
+                  <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
+                </div>
+              ) : (
+                <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render & Download</button>
+              )}
+            </div>
+          </div>
+        )}
+
+      </main>
+
+      {/* Nav */}
+      <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
+        {['dashboard', 'analyze', 'editor', 'export'].map(tab => (
+          <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[11px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>
+              {tab[0].toUpperCase()}
+            </div>
+            <span>{tab}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
