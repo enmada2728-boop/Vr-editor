@@ -4,34 +4,30 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#09090b">
-<title>VR Editor AI — Studio</title>
+<title>VR Studio — Final Release</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Bangers&family=Montserrat:wght@800;900&display=swap" rel="stylesheet">
 <style>
-  body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f8fafc; -webkit-font-smoothing: antialiased; overflow: hidden; height: 100vh; width: 100vw; display: flex; flex-direction: column; }
-  .glass { background: rgba(24, 24, 27, 0.8); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
+  body { font-family: 'Inter', sans-serif; background-color: #050508; color: #f8fafc; -webkit-font-smoothing: antialiased; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+  .glass { background: rgba(18, 18, 22, 0.85); backdrop-filter: blur(20px); border-top: 1px solid rgba(255, 255, 255, 0.08); }
   .neon-text { background: linear-gradient(135deg, #a78bfa, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; color: white; }
   .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
-  .timeline-scroll::-webkit-scrollbar { height: 6px; }
-  .timeline-scroll::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
-  .clip-block { position: absolute; height: 100%; background: rgba(139, 92, 246, 0.4); border: 1px solid #8b5cf6; border-radius: 4px; overflow: hidden; }
-  .cut-block { position: absolute; height: 100%; background: rgba(239, 68, 68, 0.2); border-left: 2px solid #ef4444; border-right: 2px solid #ef4444; }
-  .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #f8fafc; z-index: 10; box-shadow: 0 0 8px white; transition: left 0.1s linear; }
+  .timeline-track { position: relative; height: 60px; background: #121215; border-radius: 8px; overflow: hidden; border: 1px solid #27272a; cursor: pointer; }
+  .cut-zone { position: absolute; height: 100%; background: repeating-linear-gradient(45deg, rgba(239, 68, 68, 0.4), rgba(239, 68, 68, 0.4) 10px, rgba(239, 68, 68, 0.2) 10px, rgba(239, 68, 68, 0.2) 20px); border-right: 1px solid #ef4444; }
+  .text-zone { position: absolute; top: 0; height: 15px; background: #8b5cf6; border-radius: 3px; opacity: 0.8; }
+  .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; z-index: 10; box-shadow: 0 0 8px rgba(255,255,255,0.8); }
 </style>
 </head>
 <body>
 <div id="root"></div>
-<canvas id="renderCanvas" class="hidden"></canvas>
-<canvas id="motionCanvas" width="64" height="64" class="hidden"></canvas>
 
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
-// --- UTILS ---
 const formatTime = (s) => {
   if (!s || isNaN(s)) return "0:00";
   const m = Math.floor(s / 60);
@@ -40,478 +36,446 @@ const formatTime = (s) => {
 };
 
 function App() {
-  // Project State
+  // Video State
   const [videoUrl, setVideoUrl] = useState('');
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [activeTool, setActiveTool] = useState('cut'); // cut, text, audio, ai, style
-  
-  // EDL (Edit Decision List)
-  const [cuts, setCuts] = useState([]); // Array of {start, end}
-  const [texts, setTexts] = useState([]); // Array of {start, end, content, color, font, anim}
-  const [zooms, setZooms] = useState([]); // Array of {time, intensity}
-  
-  // Settings
   const [ratio, setRatio] = useState('9:16');
-  const [isRendering, setIsRendering] = useState(false);
-  const [renderProgress, setRenderProgress] = useState(0);
-  const [renderStatus, setRenderStatus] = useState('');
+  
+  // UI State
+  const [activeTab, setActiveTab] = useState('cut');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  
+  // EDL State & History
+  const [edl, setEdl] = useState({ cuts: [], texts: [], zooms: [] });
+  const [history, setHistory] = useState([{ cuts: [], texts: [], zooms: [] }]);
+  const [historyIndex, setHistoryIndex] = useState(0);
 
-  // AI & Assets
-  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
+  // AI State
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_studio_key') || '');
   const [aiPrompt, setAiPrompt] = useState('');
-  const [isAiProcessing, setIsAiProcessing] = useState(false);
-  const [musicUrl, setMusicUrl] = useState(null);
-  const [musicVol, setMusicVol] = useState(0.2);
+  const [isAiThinking, setIsAiThinking] = useState(false);
 
   // Refs
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const timelineRef = useRef(null);
-  const [videoFile, setVideoFile] = useState(null);
+  const audioSourceRef = useRef(null); // CRITICAL FIX: Persistent audio source
+  const requestRef = useRef(null);
+  const blobUrlRef = useRef('');
 
-  // --- INITIALIZATION ---
+  // --- AUDIO INIT ---
+  useEffect(() => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return () => {
+      if (audioCtxRef.current) audioCtxRef.current.close();
+    };
+  }, []);
+
+  // --- FILE HANDLING ---
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
-    if (file) {
-      setVideoFile(file);
-      setVideoUrl(URL.createObjectURL(file));
-      setCuts([]); setTexts([]); setZooms([]);
+    if (!file) return;
+
+    // Revoke old URL to prevent memory leaks
+    if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    
+    const url = URL.createObjectURL(file);
+    blobUrlRef.current = url;
+    setVideoUrl(url);
+    
+    const initialEdl = { cuts: [], texts: [], zooms: [] };
+    setEdl(initialEdl);
+    setHistory([initialEdl]);
+    setHistoryIndex(0);
+    
+    // Reset audio source
+    if (audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioSourceRef.current = null;
     }
   };
 
-  useEffect(() => {
-    if (videoRef.current) {
-      const vid = videoRef.current;
-      const updateTime = () => setCurrentTime(vid.currentTime);
-      const handleEnded = () => setIsPlaying(false);
-      vid.addEventListener('timeupdate', updateTime);
-      vid.addEventListener('ended', handleEnded);
-      return () => {
-        vid.removeEventListener('timeupdate', updateTime);
-        vid.removeEventListener('ended', handleEnded);
-      };
+  // --- HISTORY ---
+  const saveState = (newEdl) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newEdl);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+    setEdl(newEdl);
+  };
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      setHistoryIndex(historyIndex - 1);
+      setEdl(history[historyIndex - 1]);
     }
-  }, [videoUrl]);
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      setHistoryIndex(historyIndex + 1);
+      setEdl(history[historyIndex + 1]);
+    }
+  };
+
+  // --- RENDER LOOP (ALWAYS RUNNING) ---
+  const drawFrame = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    
+    if (video && canvas && video.readyState >= 2) {
+      const ctx = canvas.getContext('2d');
+      const time = video.currentTime;
+
+      // 1. Handle Cuts (Skip)
+      const activeCut = edl.cuts.find(c => time >= c.start && time <= c.end);
+      if (activeCut && !video.paused) {
+        if (video.fastSeek) video.fastSeek(activeCut.end);
+        else video.currentTime = activeCut.end;
+      }
+
+      // 2. Clear Canvas
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 3. Zoom Effect
+      let scale = 1.0;
+      const activeZoom = edl.zooms.find(z => time >= z.time && time <= z.time + 2);
+      if (activeZoom) {
+        const progress = (time - activeZoom.time) / 2;
+        scale = activeZoom.intensity - (progress * 0.2); 
+      }
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.scale(scale, scale);
+
+      // 4. Draw Video (Fit)
+      const vRatio = video.videoWidth / video.videoHeight;
+      const cRatio = canvas.width / canvas.height;
+      let w = canvas.width, h = canvas.height;
+      if (vRatio > cRatio) h = canvas.width / vRatio; else w = canvas.height * vRatio;
+      ctx.drawImage(video, -w/2, -h/2, w, h);
+
+      // 5. Draw Text
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      edl.texts.forEach(t => {
+        if (time >= t.start && time <= t.end) {
+          ctx.font = `900 ${ratio === '9:16' ? '60px' : '70px'} ${t.font || 'Montserrat'}`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          const opacity = Math.min(1, (time - t.start) * 5);
+          ctx.globalAlpha = opacity;
+
+          ctx.lineWidth = 10;
+          ctx.strokeStyle = '#000';
+          ctx.lineJoin = 'round';
+          ctx.strokeText(t.content, canvas.width / 2, canvas.height * 0.75);
+          
+          ctx.fillStyle = t.color || '#fff';
+          ctx.fillText(t.content, canvas.width / 2, canvas.height * 0.75);
+          ctx.globalAlpha = 1;
+        }
+      });
+
+      setCurrentTime(time);
+    }
+    requestRef.current = requestAnimationFrame(drawFrame);
+  };
+
+  // Start loop on mount
+  useEffect(() => {
+    requestRef.current = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(requestRef.current);
+  }, [edl, ratio]); // Rebind loop when EDL changes
 
   const togglePlay = () => {
-    if (videoRef.current.paused) { videoRef.current.play(); setIsPlaying(true); }
-    else { videoRef.current.pause(); setIsPlaying(false); }
-  };
-
-  // --- VR PRESETS ---
-  const applyPreset = (type) => {
-    let newTexts = [];
-    let newZooms = [];
-    
-    if (type === 'funny') {
-      newTexts = [
-        { start: 1, end: 3, content: "LOL", color: "#fbbf24", font: "Bangers", anim: "bounce" },
-        { start: 5, end: 7, content: "WAIT WHAT", color: "#f87171", font: "Bangers", anim: "shake" }
-      ];
-      newZooms = [{ time: 1, intensity: 1.2 }, { time: 5, intensity: 1.3 }];
-    } else if (type === 'horror') {
-      newTexts = [
-        { start: 2, end: 5, content: "DON'T LOOK BEHIND YOU", color: "#ef4444", font: "Montserrat", anim: "fade" }
-      ];
-      newZooms = [{ time: 2, intensity: 1.1 }];
-    } else if (type === 'action') {
-      newTexts = [
-        { start: 0, end: 2, content: "LET'S GO!", color: "#ffffff", font: "Montserrat", anim: "pop" }
-      ];
-      newZooms = [{ time: 0, intensity: 1.4 }];
-    }
-    
-    setTexts([...texts, ...newTexts]);
-    setZooms([...zooms, ...newZooms]);
-    alert(`Applied ${type.toUpperCase()} preset!`);
-  };
-
-  // --- AI DIRECTOR ---
-  const processAIPrompt = async () => {
-    if (!geminiKey || !aiPrompt) return alert("Please enter a prompt and ensure Gemini API key is saved in Settings.");
-    setIsAiProcessing(true);
-    
-    try {
-      const systemPrompt = `You are the AI Director for a VR Video Editor. 
-      The user will give you a command. Translate it into a JSON array of editing actions.
-      Rules:
-      - "Cut from X to Y" -> {"type": "cut", "start": X, "end": Y}
-      - "Add text 'HELLO' at X seconds for Y seconds" -> {"type": "text", "start": X, "end": X+Y, "content": "HELLO", "color": "#ffffff", "font": "Bangers"}
-      - "Zoom in at X seconds" -> {"type": "zoom", "time": X, "intensity": 1.5}
-      Return ONLY a valid JSON array. Example:
-      [{"type": "cut", "start": 5, "end": 10}, {"type": "text", "start": 5, "end": 8, "content": "EPIC", "color": "#ff0000", "font": "Bangers"}]
-      
-      User Command: ${aiPrompt}`;
-
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] })
-      });
-      
-      const data = await res.json();
-      let text = data.candidates[0].content.parts[0].text;
-      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      
-      const actions = JSON.parse(text);
-      
-      // Apply actions
-      let newCuts = [...cuts], newTexts = [...texts], newZooms = [...zooms];
-      actions.forEach(act => {
-        if (act.type === 'cut') newCuts.push({ start: act.start, end: act.end });
-        if (act.type === 'text') newTexts.push(act);
-        if (act.type === 'zoom') newZooms.push(act);
-      });
-      
-      setCuts(newCuts); setTexts(newTexts); setZooms(newZooms);
-      setAiPrompt('');
-      alert("AI applied edits to timeline!");
-    } catch (err) {
-      alert("AI failed to understand. Try being specific (e.g. 'Add text HELLO at 5 seconds').");
-    } finally {
-      setIsAiProcessing(false);
-    }
-  };
-
-  // --- SMART ANALYSIS ---
-  const autoAnalyze = async () => {
-    if (!videoRef.current) return;
-    setRenderStatus('Analyzing audio frequencies...');
-    
     const video = videoRef.current;
-    video.muted = true; video.currentTime = 0;
-    if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    const ctx = audioCtxRef.current;
-    const source = ctx.createMediaElementSource(video);
-    const analyser = ctx.createAnalyser();
-    source.connect(analyser);
+    if (!video) return;
+    
+    if (video.paused) {
+      video.play();
+      setIsPlaying(true);
+    } else {
+      video.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  // --- AUTO CUT ---
+  const autoCutSilence = async () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const audioCtx = audioCtxRef.current;
+    
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    
+    // CRITICAL FIX: Only create source once
+    if (!audioSourceRef.current) {
+      audioSourceRef.current = audioCtx.createMediaElementSource(video);
+    }
+    
+    const analyser = audioCtx.createAnalyser();
+    audioSourceRef.current.connect(analyser);
+    // Do not connect to destination, we don't want to hear it during analysis
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     let frames = [];
-    video.play();
     
-    const loop = () => {
-      if (video.ended || video.paused) {
+    video.muted = true;
+    video.currentTime = 0;
+    video.play();
+
+    const analyze = () => {
+      if (video.paused || video.ended) {
         video.pause(); video.muted = false;
-        // Generate Cuts based on silence
-        let newCuts = [];
-        let isSilent = false, silenceStart = 0;
+        analyser.disconnect(); // Cleanup
         
+        let cuts = [];
+        let isSilent = false, silenceStart = 0;
+        const threshold = 10; // Sensitivity
+
         frames.forEach(f => {
-          if (f.vol < 15 && !isSilent) { isSilent = true; silenceStart = f.time; }
-          else if (f.vol >= 15 && isSilent) { 
-            isSilent = false; 
-            if (f.time - silenceStart > 1.5) newCuts.push({ start: silenceStart, end: f.time }); 
+          if (f.vol < threshold && !isSilent) { isSilent = true; silenceStart = f.time; }
+          else if (f.vol >= threshold && isSilent) {
+            isSilent = false;
+            if (f.time - silenceStart > 1.5) cuts.push({ start: silenceStart, end: f.time });
           }
         });
-        setCuts(newCuts);
-        setRenderStatus('');
+
+        saveState({ ...edl, cuts: [...edl.cuts, ...cuts] });
         return;
       }
-      
+
       analyser.getByteFrequencyData(dataArray);
       let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
       frames.push({ time: video.currentTime, vol: sum / dataArray.length });
       
-      setRenderStatus(`Analyzing... ${formatTime(video.currentTime)}`);
-      requestAnimationFrame(loop);
+      requestAnimationFrame(analyze);
     };
-    loop();
+    analyze();
   };
 
-  // --- RENDER ENGINE ---
-  const renderVideo = async () => {
-    setIsRendering(true); setRenderProgress(0); setRenderStatus('Preparing...');
-    
+  // --- AI DIRECTOR ---
+  const processAI = async () => {
+    if (!geminiKey || !aiPrompt) return alert("Enter prompt and API key.");
+    setIsAiThinking(true);
     try {
-      const canvas = document.getElementById('renderCanvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = ratio === '9:16' ? 720 : 1280;
-      canvas.height = ratio === '9:16' ? 1280 : 720;
+      const prompt = `You are a video editing AI. Translate the user's command into an array of JSON actions.
+      Actions: Cut {"type": "cut", "start": num, "end": num}, Text {"type": "text", "start": num, "end": num, "content": "str", "color": "#fff", "font": "Bangers"}, Zoom {"type": "zoom", "time": num, "intensity": num}.
+      User: "${aiPrompt}"
+      Return ONLY JSON array.`;
       
-      const video = document.createElement('video');
-      video.src = videoUrl; video.crossOrigin = 'anonymous'; video.playsInline = true;
-      video.style.display = 'none'; document.body.appendChild(video);
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
       
-      await new Promise(r => { video.onloadedmetadata = r; });
+      const data = await res.json();
+      let text = data.candidates[0].content.parts[0].text;
       
-      const audioCtx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
-      const dest = audioCtx.createMediaStreamDestination();
-      const gameSource = audioCtx.createMediaElementSource(video);
-      gameSource.connect(dest);
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) throw new Error("No JSON found");
       
-      let musicAudio = null, musicGain = null;
-      if (musicUrl) {
-        musicAudio = new Audio(musicUrl); musicAudio.loop = true;
-        const musicSource = audioCtx.createMediaElementSource(musicAudio);
-        musicGain = audioCtx.createGain(); musicGain.gain.value = musicVol;
-        musicSource.connect(musicGain); musicGain.connect(dest);
-      }
+      const actions = JSON.parse(jsonMatch[0]);
+      let newEdl = { ...edl };
+      actions.forEach(a => {
+        if (a.type === 'cut') newEdl.cuts.push({ start: a.start, end: a.end });
+        if (a.type === 'text') newEdl.texts.push({ start: a.start, end: a.end, content: a.content, color: a.color, font: a.font });
+        if (a.type === 'zoom') newEdl.zooms.push({ time: a.time, intensity: a.intensity });
+      });
       
-      const stream = canvas.captureStream(30);
-      dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
-      
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      let chunks = [];
-      recorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
-      recorder.onstop = () => {
-        if(musicAudio) musicAudio.pause();
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'VR_Studio_Export.webm'; a.click();
-        setIsRendering(false); setRenderStatus('Done!');
-        document.body.removeChild(video);
-      };
-      
-      video.currentTime = 0; video.play(); if(musicAudio) musicAudio.play();
-      await new Promise(r => setTimeout(r, 500));
-      
-      recorder.start(); setRenderStatus('Rendering...');
-      
-      let lastSFX = -10;
-      
-      const loop = () => {
-        if (video.ended) { recorder.stop(); return; }
-        
-        const time = video.currentTime;
-        
-        // 1. Handle Cuts (Skip)
-        const activeCut = cuts.find(c => time >= c.start && time <= c.end);
-        if (activeCut) {
-          video.currentTime = activeCut.end;
-          ctx.fillStyle = 'white'; ctx.fillRect(0,0,canvas.width,canvas.height); // Flash cut
-          requestAnimationFrame(loop);
-          return;
-        }
-        
-        // 2. Handle Ducking
-        if (musicGain && musicAudio) {
-           // Simple ducking logic based on cuts (if near a cut, it means loud part)
-           const nearAction = zooms.some(z => Math.abs(z.time - time) < 1);
-           musicGain.gain.setTargetAtTime(nearAction ? 0.05 : musicVol, audioCtx.currentTime, 0.2);
-        }
-        
-        // 3. Draw Background (Blur)
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.filter = 'blur(20px) brightness(0.3)';
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // 4. Draw Video (Fit)
-        ctx.filter = 'contrast(1.1) saturate(1.2)';
-        const vRatio = video.videoWidth / video.videoHeight;
-        const cRatio = canvas.width / canvas.height;
-        let w = canvas.width, h = canvas.height;
-        if (vRatio > cRatio) h = canvas.width / vRatio; else w = canvas.height * vRatio;
-        
-        // 5. Handle Zooms
-        let scale = 1.0;
-        const activeZoom = zooms.find(z => time >= z.time && time <= z.time + 2);
-        if (activeZoom) {
-           const progress = (time - activeZoom.time) / 2;
-           scale = activeZoom.intensity - (progress * 0.2); // Zoom out slowly
-        }
-        
-        ctx.translate(canvas.width/2, canvas.height/2);
-        ctx.scale(scale, scale);
-        ctx.drawImage(video, -w/2, -h/2, w, h);
-        
-        // Reset transform for text
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        
-        // 6. Draw Texts
-        texts.forEach(t => {
-          if (time >= t.start && time <= t.end) {
-            ctx.font = `900 ${ratio==='9:16'?'70px':'80px'} ${t.font || 'Montserrat'}`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            
-            // Pop-in animation
-            const progress = Math.min(1, (time - t.start) * 5);
-            ctx.globalAlpha = progress;
-            
-            ctx.lineWidth = 12; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round';
-            ctx.strokeText(t.content, canvas.width/2, canvas.height*0.75);
-            ctx.fillStyle = t.color || '#fff';
-            ctx.fillText(t.content, canvas.width/2, canvas.height*0.75);
-            ctx.globalAlpha = 1;
-          }
-        });
-        
-        setRenderProgress((time/duration)*100);
-        requestAnimationFrame(loop);
-      };
-      loop();
-    } catch(err) { alert(err.message); setIsRendering(false); }
+      saveState(newEdl);
+      setAiPrompt('');
+    } catch (e) {
+      alert("AI Error: " + e.message);
+    } finally {
+      setIsAiThinking(false);
+    }
   };
+
+  // --- EXPORT ENGINE ---
+  const exportVideo = async () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const audioCtx = audioCtxRef.current;
+    
+    if (!video || !canvas) return;
+    
+    setIsExporting(true);
+    setExportProgress(0);
+    video.pause();
+    setIsPlaying(false);
+    
+    // Ensure audio is routed to destination for export
+    if (!audioSourceRef.current) {
+      audioSourceRef.current = audioCtx.createMediaElementSource(video);
+    }
+    const dest = audioCtx.createMediaStreamDestination();
+    audioSourceRef.current.connect(dest);
+    // Don't connect to speakers during export to avoid echo
+    
+    const stream = canvas.captureStream(30);
+    dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+    
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+    let chunks = [];
+    
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const a = document.createElement('a'); 
+      a.href = URL.createObjectURL(blob); 
+      a.download = 'VR_Export.webm'; 
+      a.click();
+      
+      // Cleanup
+      audioSourceRef.current.disconnect(dest);
+      setIsExporting(false);
+    };
+    
+    video.currentTime = 0;
+    video.play();
+    recorder.start();
+    
+    const checkExport = () => {
+      if (video.ended || !isExporting) { 
+        recorder.stop(); 
+        return; 
+      }
+      setExportProgress((video.currentTime / duration) * 100);
+      requestAnimationFrame(checkExport);
+    };
+    checkExport();
+  };
+
+  useEffect(() => {
+    if (canvasRef.current) {
+      canvasRef.current.width = ratio === '9:16' ? 720 : 1280;
+      canvasRef.current.height = ratio === '9:16' ? 1280 : 720;
+    }
+  }, [ratio]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#09090b] text-white">
+    <div className="flex flex-col h-screen bg-[#050508] text-white">
+      
       {/* Top Bar */}
-      <header className="glass flex justify-between items-center px-4 py-3 z-50 border-b border-gray-800">
-        <h1 className="text-lg font-bold tracking-tight">VR Studio <span className="neon-text">PRO</span></h1>
+      <header className="flex justify-between items-center px-4 py-2 border-b border-gray-800 z-50 bg-[#09090b]">
+        <h1 className="text-sm font-bold tracking-wider">VR STUDIO <span className="neon-text">PRO</span></h1>
         <div className="flex gap-2">
+          <button onClick={undo} disabled={historyIndex === 0} className="px-2 py-1 bg-gray-800 text-xs rounded disabled:opacity-50">Undo</button>
+          <button onClick={redo} disabled={historyIndex === history.length - 1} className="px-2 py-1 bg-gray-800 text-xs rounded disabled:opacity-50">Redo</button>
           {!videoUrl ? (
-            <label className="neon-btn px-4 py-2 rounded-lg text-xs font-bold cursor-pointer">
-              Import Video
-              <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
-            </label>
+            <label className="neon-btn px-3 py-1 rounded text-xs font-bold cursor-pointer">Import<input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} /></label>
           ) : (
-            <button onClick={() => setActiveTab('export')} className="neon-btn px-4 py-2 rounded-lg text-xs font-bold">Export</button>
+            <button onClick={exportVideo} disabled={isExporting} className="neon-btn px-3 py-1 rounded text-xs font-bold">
+              {isExporting ? `${Math.round(exportProgress)}%` : 'Export'}
+            </button>
           )}
         </div>
       </header>
 
-      {/* Main Canvas Area */}
+      {/* Main Canvas */}
       <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
         {!videoUrl ? (
-          <div className="text-center p-8 space-y-4">
-             <div className="w-20 h-20 bg-gray-800 rounded-2xl mx-auto flex items-center justify-center border border-gray-700">
-                <span className="text-3xl">🎬</span>
-             </div>
-             <p className="text-gray-400 text-sm">Import a video to start editing</p>
+          <div className="text-center space-y-2">
+            <p className="text-gray-400">No video loaded</p>
+            <label className="neon-btn px-6 py-2 rounded-xl cursor-pointer inline-block">Select File<input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} /></label>
           </div>
         ) : (
-          <div className={`relative ${ratio === '9:16' ? 'w-[min(100%,400px)] aspect-[9/16]' : 'w-full aspect-video'} bg-black shadow-2xl`}>
-            <video ref={videoRef} src={videoUrl} onLoadedMetadata={(e) => setDuration(e.target.duration)} className="w-full h-full object-contain" playsInline onClick={togglePlay} />
+          <div className={`relative ${ratio === '9:16' ? 'h-full aspect-[9/16]' : 'w-full aspect-video'} max-h-full max-w-full flex items-center justify-center`}>
+            <video ref={videoRef} src={videoUrl} onLoadedMetadata={(e) => setDuration(e.target.duration)} className="hidden" playsInline crossOrigin="anonymous" />
+            <canvas ref={canvasRef} className="w-full h-full object-contain cursor-pointer" onClick={togglePlay} />
             
-            {/* Play Overlay */}
-            {!isPlaying && <div onClick={togglePlay} className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer"><div className="w-16 h-16 bg-white/20 backdrop-blur rounded-full flex items-center justify-center"><span className="text-2xl ml-1">▶</span></div></div>}
+            {!isPlaying && !isExporting && (
+              <div onClick={togglePlay} className="absolute inset-0 flex items-center justify-center bg-black/40">
+                <div className="w-16 h-16 bg-white/20 backdrop-blur rounded-full flex items-center justify-center text-2xl">▶</div>
+              </div>
+            )}
             
-            {/* Ratio Switcher */}
-            <button onClick={() => setRatio(ratio === '9:16' ? '16:9' : '9:16')} className="absolute top-2 right-2 bg-black/60 px-3 py-1 text-xs font-bold rounded border border-gray-600">
-              {ratio === '9:16' ? '📱 Shorts' : '💻 Long-form'}
-            </button>
+            <div className="absolute top-2 right-2 flex gap-2">
+              <button onClick={() => setRatio(ratio === '9:16' ? '16:9' : '9:16')} className="bg-black/60 px-3 py-1 text-xs rounded border border-gray-600 backdrop-blur">
+                {ratio === '9:16' ? '📱 Shorts' : '💻 Long'}
+              </button>
+            </div>
           </div>
         )}
       </main>
 
-      {/* Timeline Area */}
+      {/* Timeline */}
       {videoUrl && (
-        <div className="h-32 bg-[#121215] border-t border-gray-800 flex flex-col relative z-40">
-          <div className="flex justify-between items-center px-4 py-2 border-b border-gray-800 text-xs font-mono text-gray-400">
+        <div className="h-20 bg-[#121215] border-t border-gray-800 p-2 flex flex-col justify-center">
+          <div className="flex justify-between text-xs font-mono text-gray-400 mb-1 px-1">
             <span>{formatTime(currentTime)}</span>
             <span>{formatTime(duration)}</span>
           </div>
-          
-          <div className="flex-1 relative overflow-x-auto timeline-scroll" ref={timelineRef}>
-            <div className="h-full relative min-w-full" style={{ width: `${Math.max(100, duration * 5)}%` }}>
-              {/* Waveform Background */}
-              <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjEwMCI+PHBhdGggZD0iTTIgMEwyIDQwTTIgNjBMMiAxMDAiIHN0cm9rZT0iIzY2NiIgc3Ryb2tlLXdpZHRoPSIxIi8+PC9zdmc+')] bg-repeat-x bg-center" />
-              
-              {/* Clips / Cuts */}
-              {cuts.map((c, i) => (
-                <div key={i} className="cut-block" style={{ left: `${(c.start/duration)*100}%`, width: `${((c.end-c.start)/duration)*100}%` }}>
-                  <span className="text-[8px] text-red-400 absolute top-1 left-1 font-bold">CUT</span>
-                </div>
-              ))}
-
-              {/* Zooms */}
-              {zooms.map((z, i) => (
-                <div key={i} className="absolute bottom-0 w-2 h-2 bg-yellow-400 rounded-full" style={{ left: `${(z.time/duration)*100}%` }} title="Zoom" />
-              ))}
-
-              {/* Playhead */}
-              <div className="playhead" style={{ left: `${(currentTime/duration)*100}%` }} />
-            </div>
+          <div className="timeline-track" onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const pct = (e.clientX - rect.left) / rect.width;
+            videoRef.current.currentTime = pct * duration;
+          }}>
+            {edl.cuts.map((c, i) => (
+              <div key={i} className="cut-zone" style={{ left: `${(c.start/duration)*100}%`, width: `${((c.end-c.start)/duration)*100}%` }} />
+            ))}
+            {edl.texts.map((t, i) => (
+              <div key={`t-${i}`} className="text-zone" style={{ left: `${(t.start/duration)*100}%`, width: `${((t.end-t.start)/duration)*100}%` }} />
+            ))}
+            <div className="playhead" style={{ left: `${(currentTime/duration)*100}%` }} />
           </div>
         </div>
       )}
 
       {/* Bottom Toolbar */}
       {videoUrl && (
-        <div className="glass border-t border-gray-800 pb-safe z-50">
-          {/* Tool Panels */}
-          <div className="p-4 h-48 overflow-y-auto">
-            {activeTool === 'cut' && (
+        <div className="h-64 glass z-50 flex flex-col">
+          <div className="flex-1 overflow-y-auto p-4">
+            {activeTab === 'cut' && (
               <div className="space-y-4">
-                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Smart Editing</h3>
-                <button onClick={autoAnalyze} className="w-full bg-gray-800 border border-gray-700 py-3 rounded-xl font-bold text-sm">Auto-Cut Silence</button>
-                <p className="text-xs text-gray-500">Analyzes audio spikes and removes dead space automatically.</p>
+                <h3 className="text-xs font-bold text-gray-400 uppercase">Smart Cut</h3>
+                <button onClick={autoCutSilence} className="w-full bg-gray-800 py-3 rounded-lg font-bold">Auto-Cut Silence</button>
+                <p className="text-xs text-gray-500">Automatically finds quiet sections and skips them during playback and export.</p>
               </div>
             )}
-
-            {activeTool === 'text' && (
+            
+            {activeTab === 'text' && (
               <div className="space-y-4">
-                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Add Text</h3>
+                <h3 className="text-xs font-bold text-gray-400 uppercase">Add Text</h3>
                 <div className="flex gap-2">
-                  <input type="text" id="newText" placeholder="Type text here..." className="flex-1 bg-gray-900 rounded-lg px-3 text-sm border border-gray-700" />
+                  <input type="text" id="txtInput" placeholder="Text..." className="flex-1 bg-gray-900 rounded p-2 text-sm border border-gray-700" />
                   <button onClick={() => {
-                    const val = document.getElementById('newText').value;
-                    if(val) setTexts([...texts, { start: currentTime, end: currentTime + 3, content: val, color: '#fff', font: 'Montserrat' }]);
-                  }} className="neon-btn px-4 py-2 rounded-lg font-bold text-xs">Add</button>
-                </div>
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {texts.map((t, i) => (
-                    <div key={i} className="bg-gray-800 px-3 py-1 rounded text-xs whitespace-nowrap">{t.content} <span onClick={() => setTexts(texts.filter((_, idx) => idx !== i))} className="text-red-400 ml-2 cursor-pointer">×</span></div>
-                  ))}
+                    const val = document.getElementById('txtInput').value;
+                    if(val) saveState({ ...edl, texts: [...edl.texts, { start: currentTime, end: currentTime + 3, content: val, color: '#fff', font: 'Bangers' }] });
+                  }} className="neon-btn px-4 rounded text-sm">Add</button>
                 </div>
               </div>
             )}
 
-            {activeTool === 'style' && (
+            {activeTab === 'ai' && (
               <div className="space-y-4">
-                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">VR Presets</h3>
-                <div className="grid grid-cols-3 gap-2">
-                  <button onClick={() => applyPreset('funny')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">😂 Funny</button>
-                  <button onClick={() => applyPreset('horror')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">👻 Horror</button>
-                  <button onClick={() => applyPreset('action')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">🔥 Action</button>
-                </div>
-              </div>
-            )}
-
-            {activeTool === 'ai' && (
-              <div className="space-y-4">
-                <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wider">AI Director</h3>
+                <h3 className="text-xs font-bold text-purple-400 uppercase">AI Director</h3>
+                <input type="password" value={geminiKey} onChange={e => {setGeminiKey(e.target.value); localStorage.setItem('vr_studio_key', e.target.value);}} placeholder="Gemini API Key" className="w-full bg-gray-900 p-2 text-xs rounded border border-gray-700" />
                 <div className="flex gap-2">
-                  <input type="text" value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="e.g. Cut 5s to 10s, add red text EPIC..." className="flex-1 bg-gray-900 rounded-lg px-3 text-sm border border-gray-700" />
-                  <button onClick={processAIPrompt} disabled={isAiProcessing} className="neon-btn px-4 py-2 rounded-lg font-bold text-xs">{isAiProcessing ? '...' : 'Run'}</button>
+                  <input type="text" value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Cut 5s to 10s, add text EPIC" className="flex-1 bg-gray-900 rounded p-2 text-sm border border-gray-700" />
+                  <button onClick={processAI} className="neon-btn px-4 rounded text-sm">{isAiThinking ? '...' : 'Run'}</button>
                 </div>
-                <p className="text-xs text-gray-500">Uses Gemini API (Add key in Settings).</p>
-                <input type="password" value={geminiKey} onChange={e => {setGeminiKey(e.target.value); localStorage.setItem('vr_editor_gemini', e.target.value);}} placeholder="Gemini Key" className="w-full bg-black/50 text-xs p-2 rounded border border-gray-800" />
-              </div>
-            )}
-
-            {activeTool === 'audio' && (
-              <div className="space-y-4">
-                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Background Music</h3>
-                <label className="block w-full bg-gray-800 border border-gray-700 py-3 rounded-xl font-bold text-sm text-center cursor-pointer">
-                  {musicUrl ? "Change Music" : "Upload Music"}
-                  <input type="file" accept="audio/*" className="hidden" onChange={(e) => setMusicUrl(URL.createObjectURL(e.target.files[0]))} />
-                </label>
-                {musicUrl && (
-                  <div>
-                    <label className="text-xs text-gray-400">Volume: {Math.round(musicVol*100)}%</label>
-                    <input type="range" min="0" max="1" step="0.1" value={musicVol} onChange={e => setMusicVol(parseFloat(e.target.value))} className="w-full accent-purple-500" />
-                  </div>
-                )}
               </div>
             )}
           </div>
 
-          {/* Tab Bar */}
-          <div className="flex justify-around items-center border-t border-gray-800 pt-2 pb-6 px-2">
-            {['cut', 'text', 'style', 'ai', 'audio'].map(tool => (
-              <button key={tool} onClick={() => setActiveTool(tool)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase ${activeTool === tool ? 'text-purple-400' : 'text-gray-500'}`}>
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${activeTool === tool ? 'bg-purple-500/20' : ''}`}>
-                  {tool === 'cut' ? '✂️' : tool === 'text' ? 'T' : tool === 'style' ? '🎨' : tool === 'ai' ? '🧠' : '🎵'}
+          <div className="flex justify-around items-center border-t border-gray-800 py-2 px-2">
+            {['cut', 'text', 'ai'].map(t => (
+              <button key={t} onClick={() => setActiveTab(t)} className={`flex flex-col items-center text-[10px] font-bold uppercase ${activeTab === t ? 'text-purple-400' : 'text-gray-500'}`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-1 ${activeTab === t ? 'bg-purple-500/20' : ''}`}>
+                  {t === 'cut' ? '✂️' : t === 'text' ? 'T' : '🧠'}
                 </div>
-                {tool}
+                {t}
               </button>
             ))}
-          </div>
-        </div>
-      )}
-
-      {/* Export Modal */}
-      {isRendering && (
-        <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-6">
-          <div className="w-full max-w-sm space-y-6 text-center">
-            <h2 className="text-2xl font-bold">Rendering...</h2>
-            <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
-            </div>
-            <p className="text-xs text-blue-400 font-mono">{Math.floor(renderProgress)}%</p>
-            <p className="text-xs text-yellow-400">{renderStatus}</p>
           </div>
         </div>
       )}
