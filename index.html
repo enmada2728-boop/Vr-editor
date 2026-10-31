@@ -2,498 +2,519 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#050508">
-<title>VR Editor AI — PRO ENGINE 3.0</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<title>VR Editor AI — Studio</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Bangers&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Bangers&family=Montserrat:wght@800;900&display=swap" rel="stylesheet">
 <style>
-  body { font-family: 'Inter', sans-serif; background-color: #050508; color: #f8fafc; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
-  .glass { background: rgba(20, 20, 28, 0.7); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
-  .neon-text { background: linear-gradient(135deg, #8b5cf6, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; }
+  body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f8fafc; -webkit-font-smoothing: antialiased; overflow: hidden; height: 100vh; width: 100vw; display: flex; flex-direction: column; }
+  .glass { background: rgba(24, 24, 27, 0.8); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
+  .neon-text { background: linear-gradient(135deg, #a78bfa, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .neon-btn { background: linear-gradient(135deg, #8b5cf6, #3b82f6); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3); transition: all 0.15s; color: white; }
   .neon-btn:active { transform: scale(0.97); opacity: 0.9; }
+  .timeline-scroll::-webkit-scrollbar { height: 6px; }
+  .timeline-scroll::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+  .clip-block { position: absolute; height: 100%; background: rgba(139, 92, 246, 0.4); border: 1px solid #8b5cf6; border-radius: 4px; overflow: hidden; }
+  .cut-block { position: absolute; height: 100%; background: rgba(239, 68, 68, 0.2); border-left: 2px solid #ef4444; border-right: 2px solid #ef4444; }
+  .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #f8fafc; z-index: 10; box-shadow: 0 0 8px white; transition: left 0.1s linear; }
 </style>
 </head>
 <body>
 <div id="root"></div>
-<canvas id="motionCanvas" width="64" height="64" class="hidden"></canvas>
 <canvas id="renderCanvas" class="hidden"></canvas>
-<canvas id="timelineCanvas" width="1000" height="100"></canvas>
+<canvas id="motionCanvas" width="64" height="64" class="hidden"></canvas>
 
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
-// --- PRO SFX GENERATOR ---
-const playSFX = (audioCtx, dest, type) => {
-  const t = audioCtx.currentTime;
-  if (type === 'boom') {
-    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
-    osc.type = 'sine'; osc.frequency.setValueAtTime(150, t);
-    osc.frequency.exponentialRampToValueAtTime(40, t + 0.4);
-    gain.gain.setValueAtTime(0.8, t); gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
-    osc.connect(gain); gain.connect(dest); osc.start(t); osc.stop(t + 0.5);
-  } else if (type === 'whoosh') {
-    const bufferSize = audioCtx.sampleRate * 0.4;
-    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-    const noise = audioCtx.createBufferSource(); noise.buffer = buffer;
-    const filter = audioCtx.createBiquadFilter(); filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(800, t); filter.frequency.exponentialRampToValueAtTime(200, t + 0.3);
-    const gain = audioCtx.createGain(); gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
-    noise.connect(filter); filter.connect(gain); gain.connect(dest); noise.start(t);
-  }
+// --- UTILS ---
+const formatTime = (s) => {
+  if (!s || isNaN(s)) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
 };
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [videoFile, setVideoFile] = useState(null);
+  // Project State
   const [videoUrl, setVideoUrl] = useState('');
-  const [videoDuration, setVideoDuration] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [activeTool, setActiveTool] = useState('cut'); // cut, text, audio, ai, style
   
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzeProgress, setAnalyzeProgress] = useState(0);
-  const [timelineData, setTimelineData] = useState([]); // Array of Keep Segments
+  // EDL (Edit Decision List)
+  const [cuts, setCuts] = useState([]); // Array of {start, end}
+  const [texts, setTexts] = useState([]); // Array of {start, end, content, color, font, anim}
+  const [zooms, setZooms] = useState([]); // Array of {time, intensity}
   
+  // Settings
   const [ratio, setRatio] = useState('9:16');
-  const [intensity, setIntensity] = useState('medium');
-  const [font, setFont] = useState('Montserrat');
-  const [captionColor, setCaptionColor] = useState('#8b5cf6');
-  
-  const [audioDucking, setAudioDucking] = useState(true);
-  const [smartSFX, setSmartSFX] = useState(true);
-  const [proCamera, setProCamera] = useState(true);
-  const [flashCuts, setFlashCuts] = useState(true);
-  const [blurBg, setBlurBg] = useState(true);
-  const [colorGrade, setColorGrade] = useState(true);
-  
-  const [customFontName, setCustomFontName] = useState('');
-  const [musicUrl, setMusicUrl] = useState(null);
-  const [musicVolume, setMusicVolume] = useState(0.2);
-  
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
   const [renderStatus, setRenderStatus] = useState('');
-  const [renderError, setRenderError] = useState('');
 
+  // AI & Assets
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('vr_editor_gemini') || '');
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [musicUrl, setMusicUrl] = useState(null);
+  const [musicVol, setMusicVol] = useState(0.2);
+
+  // Refs
   const videoRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const chunksRef = useRef([]);
+  const timelineRef = useRef(null);
+  const [videoFile, setVideoFile] = useState(null);
 
+  // --- INITIALIZATION ---
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setVideoFile(file); setVideoUrl(URL.createObjectURL(file));
-      setTimelineData([]);
-      setRenderError(''); setRenderStatus(''); setAnalyzeProgress(0);
-      setActiveTab('analyze');
+      setVideoFile(file);
+      setVideoUrl(URL.createObjectURL(file));
+      setCuts([]); setTexts([]); setZooms([]);
     }
   };
 
-  const handleFontUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      const url = URL.createObjectURL(file);
-      const loadedFont = new FontFace('UserCustomFont', `url(${url})`);
-      await loadedFont.load(); document.fonts.add(loadedFont); setCustomFontName('UserCustomFont');
-      alert("Custom font loaded!");
-    } catch (err) { alert("Failed to load font."); }
-  };
-
-  const drawTimeline = (duration, data) => {
-    const canvas = document.getElementById('timelineCanvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width; const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    
-    ctx.fillStyle = '#1c1c21'; ctx.fillRect(0, 0, w, h); // Default is cut
-    
-    // Draw keep segments
-    data.forEach(seg => {
-      ctx.fillStyle = 'rgba(139, 92, 246, 0.6)';
-      ctx.fillRect((seg.start / duration) * w, 0, ((seg.end - seg.start) / duration) * w, h); 
-    });
-  };
-
   useEffect(() => {
-    if (videoDuration > 0) drawTimeline(videoDuration, timelineData);
-  }, [timelineData, videoDuration]);
+    if (videoRef.current) {
+      const vid = videoRef.current;
+      const updateTime = () => setCurrentTime(vid.currentTime);
+      const handleEnded = () => setIsPlaying(false);
+      vid.addEventListener('timeupdate', updateTime);
+      vid.addEventListener('ended', handleEnded);
+      return () => {
+        vid.removeEventListener('timeupdate', updateTime);
+        vid.removeEventListener('ended', handleEnded);
+      };
+    }
+  }, [videoUrl]);
 
-  // --- ULTIMATE SMART CUT ENGINE ---
-  const startAnalysis = async () => {
+  const togglePlay = () => {
+    if (videoRef.current.paused) { videoRef.current.play(); setIsPlaying(true); }
+    else { videoRef.current.pause(); setIsPlaying(false); }
+  };
+
+  // --- VR PRESETS ---
+  const applyPreset = (type) => {
+    let newTexts = [];
+    let newZooms = [];
+    
+    if (type === 'funny') {
+      newTexts = [
+        { start: 1, end: 3, content: "LOL", color: "#fbbf24", font: "Bangers", anim: "bounce" },
+        { start: 5, end: 7, content: "WAIT WHAT", color: "#f87171", font: "Bangers", anim: "shake" }
+      ];
+      newZooms = [{ time: 1, intensity: 1.2 }, { time: 5, intensity: 1.3 }];
+    } else if (type === 'horror') {
+      newTexts = [
+        { start: 2, end: 5, content: "DON'T LOOK BEHIND YOU", color: "#ef4444", font: "Montserrat", anim: "fade" }
+      ];
+      newZooms = [{ time: 2, intensity: 1.1 }];
+    } else if (type === 'action') {
+      newTexts = [
+        { start: 0, end: 2, content: "LET'S GO!", color: "#ffffff", font: "Montserrat", anim: "pop" }
+      ];
+      newZooms = [{ time: 0, intensity: 1.4 }];
+    }
+    
+    setTexts([...texts, ...newTexts]);
+    setZooms([...zooms, ...newZooms]);
+    alert(`Applied ${type.toUpperCase()} preset!`);
+  };
+
+  // --- AI DIRECTOR ---
+  const processAIPrompt = async () => {
+    if (!geminiKey || !aiPrompt) return alert("Please enter a prompt and ensure Gemini API key is saved in Settings.");
+    setIsAiProcessing(true);
+    
+    try {
+      const systemPrompt = `You are the AI Director for a VR Video Editor. 
+      The user will give you a command. Translate it into a JSON array of editing actions.
+      Rules:
+      - "Cut from X to Y" -> {"type": "cut", "start": X, "end": Y}
+      - "Add text 'HELLO' at X seconds for Y seconds" -> {"type": "text", "start": X, "end": X+Y, "content": "HELLO", "color": "#ffffff", "font": "Bangers"}
+      - "Zoom in at X seconds" -> {"type": "zoom", "time": X, "intensity": 1.5}
+      Return ONLY a valid JSON array. Example:
+      [{"type": "cut", "start": 5, "end": 10}, {"type": "text", "start": 5, "end": 8, "content": "EPIC", "color": "#ff0000", "font": "Bangers"}]
+      
+      User Command: ${aiPrompt}`;
+
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] })
+      });
+      
+      const data = await res.json();
+      let text = data.candidates[0].content.parts[0].text;
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      
+      const actions = JSON.parse(text);
+      
+      // Apply actions
+      let newCuts = [...cuts], newTexts = [...texts], newZooms = [...zooms];
+      actions.forEach(act => {
+        if (act.type === 'cut') newCuts.push({ start: act.start, end: act.end });
+        if (act.type === 'text') newTexts.push(act);
+        if (act.type === 'zoom') newZooms.push(act);
+      });
+      
+      setCuts(newCuts); setTexts(newTexts); setZooms(newZooms);
+      setAiPrompt('');
+      alert("AI applied edits to timeline!");
+    } catch (err) {
+      alert("AI failed to understand. Try being specific (e.g. 'Add text HELLO at 5 seconds').");
+    } finally {
+      setIsAiProcessing(false);
+    }
+  };
+
+  // --- SMART ANALYSIS ---
+  const autoAnalyze = async () => {
     if (!videoRef.current) return;
-    setIsAnalyzing(true); setTimelineData([]);
+    setRenderStatus('Analyzing audio frequencies...');
     
     const video = videoRef.current;
-    video.muted = false; video.currentTime = 0;
-    
+    video.muted = true; video.currentTime = 0;
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    const audioCtx = audioCtxRef.current;
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    
-    const source = audioCtx.createMediaElementSource(video);
-    const analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
+    const ctx = audioCtxRef.current;
+    const source = ctx.createMediaElementSource(video);
+    const analyser = ctx.createAnalyser();
     source.connect(analyser);
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     let frames = [];
-    
-    const mCanvas = document.getElementById('motionCanvas');
-    const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
-    let prevFrameData = null;
-
     video.play();
-
-    const analyzeLoop = () => {
-      if (video.paused || video.ended) {
-        setIsAnalyzing(false); setAnalyzeProgress(100); source.disconnect();
+    
+    const loop = () => {
+      if (video.ended || video.paused) {
+        video.pause(); video.muted = false;
+        // Generate Cuts based on silence
+        let newCuts = [];
+        let isSilent = false, silenceStart = 0;
         
-        // --- BUILD THE EDL (KEEP SEGMENTS) ---
-        let segments = [];
-        let isKeeping = false;
-        let keepStart = 0;
-        let silenceCounter = 0;
-        
-        frames.forEach((f, index) => {
-          // We want to KEEP if there is talking (volume > 15) OR action (motion > 100)
-          const isActive = f.volume > 15 || f.motion > 100;
-          
-          if (isActive) {
-            if (!isKeeping) {
-              // Start a new keep segment
-              isKeeping = true;
-              // Backtrack a little to catch the breath before they speak
-              keepStart = Math.max(0, f.time - 0.5); 
-            }
-            silenceCounter = 0; // Reset silence timer
-          } else {
-            if (isKeeping) {
-              silenceCounter++;
-              // If it's been quiet for more than 1.5 seconds (15 frames at 10fps), stop keeping
-              if (silenceCounter > 15) {
-                isKeeping = false;
-                let keepEnd = f.time - 1.5; // Cut the trailing silence
-                if (keepEnd > keepStart + 0.5) { // Only add if longer than 0.5s
-                  segments.push({ start: keepStart, end: keepEnd });
-                }
-              }
-            }
+        frames.forEach(f => {
+          if (f.vol < 15 && !isSilent) { isSilent = true; silenceStart = f.time; }
+          else if (f.vol >= 15 && isSilent) { 
+            isSilent = false; 
+            if (f.time - silenceStart > 1.5) newCuts.push({ start: silenceStart, end: f.time }); 
           }
         });
-        
-        // Add final segment if we ended on a keep
-        if (isKeeping) {
-          segments.push({ start: keepStart, end: video.duration });
-        }
-
-        setTimelineData(segments);
-        setActiveTab('editor'); return;
+        setCuts(newCuts);
+        setRenderStatus('');
+        return;
       }
-
+      
       analyser.getByteFrequencyData(dataArray);
       let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-      const avgVolume = sum / dataArray.length;
-
-      mCtx.drawImage(video, 0, 0, 64, 64);
-      const currentFrameData = mCtx.getImageData(0, 0, 64, 64).data;
-      let motionScore = 0;
-      if (prevFrameData) {
-        for (let i = 0; i < currentFrameData.length; i += 4) {
-          if (Math.abs(currentFrameData[i] - prevFrameData[i]) > 50) motionScore++;
-        }
-      }
-      prevFrameData = currentFrameData;
-
-      // Store frame data (sample at 10fps)
-      if (frames.length < video.currentTime * 10) {
-        frames.push({ time: video.currentTime, volume: avgVolume, motion: motionScore });
-      }
-
-      setAnalyzeProgress((video.currentTime / video.duration) * 100);
-      requestAnimationFrame(analyzeLoop);
+      frames.push({ time: video.currentTime, vol: sum / dataArray.length });
+      
+      setRenderStatus(`Analyzing... ${formatTime(video.currentTime)}`);
+      requestAnimationFrame(loop);
     };
-    analyzeLoop();
+    loop();
   };
 
+  // --- RENDER ENGINE ---
   const renderVideo = async () => {
-    setIsRendering(true); setRenderProgress(0); setRenderError(''); setRenderStatus('Loading...');
+    setIsRendering(true); setRenderProgress(0); setRenderStatus('Preparing...');
     
     try {
+      const canvas = document.getElementById('renderCanvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = ratio === '9:16' ? 720 : 1280;
+      canvas.height = ratio === '9:16' ? 1280 : 720;
+      
       const video = document.createElement('video');
       video.src = videoUrl; video.crossOrigin = 'anonymous'; video.playsInline = true;
       video.style.display = 'none'; document.body.appendChild(video);
-
-      if (video.readyState < 1) await new Promise((r) => { video.onloadedmetadata = r; setTimeout(r, 2000); });
-
-      setRenderStatus('Preparing Pro Canvas...');
-      const canvas = document.getElementById('renderCanvas');
-      const ctx = canvas.getContext('2d');
       
-      if (ratio === '9:16') { canvas.width = 1080; canvas.height = 1920; }
-      else { canvas.width = 1920; canvas.height = 1080; }
-
-      await document.fonts.ready;
-
-      setRenderStatus('Connecting Audio...');
-      const audioCtx = audioCtxRef.current;
+      await new Promise(r => { video.onloadedmetadata = r; });
+      
+      const audioCtx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
       const dest = audioCtx.createMediaStreamDestination();
-      
       const gameSource = audioCtx.createMediaElementSource(video);
-      gameSource.connect(dest); gameSource.connect(audioCtx.destination);
-
+      gameSource.connect(dest);
+      
       let musicAudio = null, musicGain = null;
       if (musicUrl) {
         musicAudio = new Audio(musicUrl); musicAudio.loop = true;
         const musicSource = audioCtx.createMediaElementSource(musicAudio);
-        musicGain = audioCtx.createGain(); musicGain.gain.value = musicVolume;
-        musicSource.connect(musicGain); musicGain.connect(dest); musicGain.connect(audioCtx.destination);
+        musicGain = audioCtx.createGain(); musicGain.gain.value = musicVol;
+        musicSource.connect(musicGain); musicGain.connect(dest);
       }
-
+      
       const stream = canvas.captureStream(30);
-      dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
-
-      setRenderStatus('Starting...');
-      let options = { mimeType: 'video/webm;codecs=vp9,opus' };
-      if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' };
-
-      const recorder = new MediaRecorder(stream, options);
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+      
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      let chunks = [];
+      recorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
       recorder.onstop = () => {
-        if (musicAudio) musicAudio.pause(); document.body.removeChild(video);
-        const blob = new Blob(chunksRef.current, { type: options.mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `VR_ProEdit.webm`; a.click();
-        setIsRendering(false); setRenderProgress(100); setRenderStatus('Done!');
+        if(musicAudio) musicAudio.pause();
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'VR_Studio_Export.webm'; a.click();
+        setIsRendering(false); setRenderStatus('Done!');
+        document.body.removeChild(video);
       };
-
-      video.currentTime = timelineData.length > 0 ? timelineData[0].start : 0;
-      video.play().catch(e => console.log(e));
-      if (musicAudio) musicAudio.play();
+      
+      video.currentTime = 0; video.play(); if(musicAudio) musicAudio.play();
       await new Promise(r => setTimeout(r, 500));
       
-      recorder.start(); setRenderStatus('Rendering PRO Edit...');
-
-      let currentSegIndex = 0;
-      let isSeeking = false;
+      recorder.start(); setRenderStatus('Rendering...');
       
-      let currentZoom = 1.0, targetZoom = 1.0;
-      let cameraDrift = 0;
-      let flashAlpha = 0;
-      let shakeX = 0, shakeY = 0, shakeRot = 0;
-      let textScale = 0.5, textOpacity = 0;
-      let lastSFXTime = -10;
+      let lastSFX = -10;
       
-      const analyser = audioCtx.createAnalyser(); gameSource.connect(analyser);
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-      const renderLoop = () => {
-        if (video.paused || video.ended || isSeeking) return;
+      const loop = () => {
+        if (video.ended) { recorder.stop(); return; }
         
-        // If we have timeline data, enforce the cuts
-        if (timelineData.length > 0) {
-           const currentSeg = timelineData[currentSegIndex];
-           
-           // If we reached the end of the current keep segment, jump to the next!
-           if (video.currentTime >= currentSeg.end) {
-              currentSegIndex++;
-              if (currentSegIndex < timelineData.length) {
-                 isSeeking = true;
-                 if (flashCuts) flashAlpha = 0.8; // Flash on cut
-                 
-                 // Seek to the next keep segment
-                 video.currentTime = timelineData[currentSegIndex].start;
-                 
-                 // Wait for seek to complete before resuming loop
-                 video.onseeked = () => { isSeeking = false; requestAnimationFrame(renderLoop); };
-                 return;
-              } else {
-                 recorder.stop(); // We finished all keep segments
-                 return;
-              }
-           }
-        } else if (video.ended) {
-            recorder.stop();
-            return;
-        }
-
         const time = video.currentTime;
         
-        // Ducking
-        if (audioDucking && musicGain) {
-          analyser.getByteFrequencyData(dataArray);
-          let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-          musicGain.gain.setTargetAtTime((sum / dataArray.length) > 45 ? 0.05 : musicVolume, audioCtx.currentTime, 0.3);
+        // 1. Handle Cuts (Skip)
+        const activeCut = cuts.find(c => time >= c.start && time <= c.end);
+        if (activeCut) {
+          video.currentTime = activeCut.end;
+          ctx.fillStyle = 'white'; ctx.fillRect(0,0,canvas.width,canvas.height); // Flash cut
+          requestAnimationFrame(loop);
+          return;
         }
-
-        // Pro Camera Motion
-        if (proCamera) cameraDrift = Math.sin(time * 0.5) * 15;
         
-        // Decay Shake
-        if (shakeX > 0) shakeX *= 0.8;
-        if (shakeY > 0) shakeY *= 0.8;
-        if (shakeRot > 0) shakeRot *= 0.8;
-
-        // --- DRAWING ---
+        // 2. Handle Ducking
+        if (musicGain && musicAudio) {
+           // Simple ducking logic based on cuts (if near a cut, it means loud part)
+           const nearAction = zooms.some(z => Math.abs(z.time - time) < 1);
+           musicGain.gain.setTargetAtTime(nearAction ? 0.05 : musicVol, audioCtx.currentTime, 0.2);
+        }
+        
+        // 3. Draw Background (Blur)
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        if (colorGrade) ctx.filter = 'contrast(1.1) saturate(1.2)';
-
-        // Blurred Background (For Shorts)
-        if (ratio === '9:16' && blurBg) {
-          ctx.save();
-          ctx.filter = 'blur(30px) brightness(0.4)';
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          ctx.restore();
-        }
-
-        // Main Video
-        ctx.save();
-        ctx.translate(canvas.width / 2 + cameraDrift + (Math.random() - 0.5) * shakeX, canvas.height / 2 + (Math.random() - 0.5) * shakeY);
-        ctx.rotate((Math.random() - 0.5) * shakeRot);
-        ctx.scale(currentZoom, currentZoom);
+        ctx.filter = 'blur(20px) brightness(0.3)';
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        const videoRatio = video.videoWidth / video.videoHeight;
-        const canvasRatio = canvas.width / canvas.height;
-        let drawWidth = canvas.width, drawHeight = canvas.height;
-        if (videoRatio > canvasRatio) drawHeight = canvas.width / videoRatio;
-        else drawWidth = canvas.height * videoRatio;
+        // 4. Draw Video (Fit)
+        ctx.filter = 'contrast(1.1) saturate(1.2)';
+        const vRatio = video.videoWidth / video.videoHeight;
+        const cRatio = canvas.width / canvas.height;
+        let w = canvas.width, h = canvas.height;
+        if (vRatio > cRatio) h = canvas.width / vRatio; else w = canvas.height * vRatio;
         
-        ctx.drawImage(video, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-        ctx.restore();
-
-        // Text & SFX (Triggered on cuts or loud moments)
-        if (flashAlpha > 0) {
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.filter = 'none';
-          ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          flashAlpha -= 0.15;
+        // 5. Handle Zooms
+        let scale = 1.0;
+        const activeZoom = zooms.find(z => time >= z.time && time <= z.time + 2);
+        if (activeZoom) {
+           const progress = (time - activeZoom.time) / 2;
+           scale = activeZoom.intensity - (progress * 0.2); // Zoom out slowly
         }
-
-        // Progress (Calculate based on segments, not raw time)
-        let totalKeepTime = timelineData.reduce((acc, seg) => acc + (seg.end - seg.start), 0);
-        let currentKeepTime = timelineData.slice(0, currentSegIndex).reduce((acc, seg) => acc + (seg.end - seg.start), 0) + (time - timelineData[currentSegIndex].start);
-        setRenderProgress((currentKeepTime / totalKeepTime) * 100);
-
-        requestAnimationFrame(renderLoop);
+        
+        ctx.translate(canvas.width/2, canvas.height/2);
+        ctx.scale(scale, scale);
+        ctx.drawImage(video, -w/2, -h/2, w, h);
+        
+        // Reset transform for text
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        
+        // 6. Draw Texts
+        texts.forEach(t => {
+          if (time >= t.start && time <= t.end) {
+            ctx.font = `900 ${ratio==='9:16'?'70px':'80px'} ${t.font || 'Montserrat'}`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            
+            // Pop-in animation
+            const progress = Math.min(1, (time - t.start) * 5);
+            ctx.globalAlpha = progress;
+            
+            ctx.lineWidth = 12; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round';
+            ctx.strokeText(t.content, canvas.width/2, canvas.height*0.75);
+            ctx.fillStyle = t.color || '#fff';
+            ctx.fillText(t.content, canvas.width/2, canvas.height*0.75);
+            ctx.globalAlpha = 1;
+          }
+        });
+        
+        setRenderProgress((time/duration)*100);
+        requestAnimationFrame(loop);
       };
-      renderLoop();
-      
-    } catch (error) {
-      console.error(error); setRenderError("Render Error: " + error.message); setIsRendering(false);
-    }
+      loop();
+    } catch(err) { alert(err.message); setIsRendering(false); }
   };
 
   return (
-    <div className="min-h-screen pb-24">
-      <header className="sticky top-0 z-50 glass px-6 py-4 flex justify-between items-center">
-        <h1 className="text-xl font-extrabold tracking-tight">VR Editor <span className="neon-text">AI</span></h1>
-        <div className="text-xs font-bold px-3 py-1 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">● PRO 3.0</div>
-      </header>
-
-      <main className="max-w-3xl mx-auto p-4 space-y-6">
-        
-        {activeTab === 'dashboard' && (
-          <div className="glass p-8 rounded-3xl text-center space-y-6">
-            <h2 className="text-3xl font-extrabold tracking-tight">True Auto-Cutter</h2>
-            <p className="text-gray-400 text-sm">Cuts out ALL dead space, silence, and loading screens automatically.</p>
-            <label className="neon-btn cursor-pointer block w-full py-4 rounded-xl font-bold text-lg">
-              <span>Import Video</span>
+    <div className="flex flex-col h-screen bg-[#09090b] text-white">
+      {/* Top Bar */}
+      <header className="glass flex justify-between items-center px-4 py-3 z-50 border-b border-gray-800">
+        <h1 className="text-lg font-bold tracking-tight">VR Studio <span className="neon-text">PRO</span></h1>
+        <div className="flex gap-2">
+          {!videoUrl ? (
+            <label className="neon-btn px-4 py-2 rounded-lg text-xs font-bold cursor-pointer">
+              Import Video
               <input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} />
             </label>
+          ) : (
+            <button onClick={() => setActiveTab('export')} className="neon-btn px-4 py-2 rounded-lg text-xs font-bold">Export</button>
+          )}
+        </div>
+      </header>
+
+      {/* Main Canvas Area */}
+      <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
+        {!videoUrl ? (
+          <div className="text-center p-8 space-y-4">
+             <div className="w-20 h-20 bg-gray-800 rounded-2xl mx-auto flex items-center justify-center border border-gray-700">
+                <span className="text-3xl">🎬</span>
+             </div>
+             <p className="text-gray-400 text-sm">Import a video to start editing</p>
+          </div>
+        ) : (
+          <div className={`relative ${ratio === '9:16' ? 'w-[min(100%,400px)] aspect-[9/16]' : 'w-full aspect-video'} bg-black shadow-2xl`}>
+            <video ref={videoRef} src={videoUrl} onLoadedMetadata={(e) => setDuration(e.target.duration)} className="w-full h-full object-contain" playsInline onClick={togglePlay} />
+            
+            {/* Play Overlay */}
+            {!isPlaying && <div onClick={togglePlay} className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer"><div className="w-16 h-16 bg-white/20 backdrop-blur rounded-full flex items-center justify-center"><span className="text-2xl ml-1">▶</span></div></div>}
+            
+            {/* Ratio Switcher */}
+            <button onClick={() => setRatio(ratio === '9:16' ? '16:9' : '9:16')} className="absolute top-2 right-2 bg-black/60 px-3 py-1 text-xs font-bold rounded border border-gray-600">
+              {ratio === '9:16' ? '📱 Shorts' : '💻 Long-form'}
+            </button>
           </div>
         )}
-
-        {activeTab === 'analyze' && (
-          <div className="glass p-6 rounded-3xl space-y-4">
-            <h2 className="text-xl font-bold">AI Analysis</h2>
-            <div className="h-32 bg-black/50 rounded-xl flex items-center justify-center border border-gray-800">
-              <video ref={videoRef} src={videoUrl} onLoadedMetadata={(e) => setVideoDuration(e.target.duration)} className="hidden" playsInline crossOrigin="anonymous" />
-              <div className="text-center">
-                <p className="text-sm font-mono text-purple-400 mb-2">{Math.floor(analyzeProgress)}% Analyzed</p>
-                <div className="w-48 h-2 bg-gray-800 rounded-full mx-auto overflow-hidden">
-                  <div className="h-full bg-purple-500 transition-all" style={{ width: `${analyzeProgress}%` }}></div>
-                </div>
-              </div>
-            </div>
-            {!isAnalyzing && timelineData.length === 0 && (
-              <button onClick={startAnalysis} className="neon-btn w-full py-4 rounded-xl font-bold">Start Analysis</button>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'editor' && (
-          <div className="space-y-4">
-            <div className="glass p-5 rounded-3xl">
-              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Timeline (EDL)</h3>
-              <canvas id="timelineCanvas" className="w-full h-[100px] rounded-lg" />
-              <p className="text-xs text-gray-500 mt-2">Purple = Keep. Grey = Cut (Silence/Loading).</p>
-            </div>
-
-            <div className="glass p-5 rounded-3xl space-y-2">
-              <h3 className="font-bold text-sm uppercase text-gray-400 mb-2">Visuals & FX</h3>
-              <label className="flex items-center justify-between p-2 border-b border-gray-800 text-sm font-semibold cursor-pointer">
-                Blurred Background <input type="checkbox" checked={blurBg} onChange={(e) => setBlurBg(e.target.checked)} className="accent-purple-500 w-5 h-5" />
-              </label>
-              <label className="flex items-center justify-between p-2 border-b border-gray-800 text-sm font-semibold cursor-pointer">
-                Flash Cuts <input type="checkbox" checked={flashCuts} onChange={(e) => setFlashCuts(e.target.checked)} className="accent-purple-500 w-5 h-5" />
-              </label>
-              <label className="flex items-center justify-between p-2 text-sm font-semibold cursor-pointer">
-                Pro Camera Motion <input type="checkbox" checked={proCamera} onChange={(e) => setProCamera(e.target.checked)} className="accent-purple-500 w-5 h-5" />
-              </label>
-            </div>
-
-            <div className="glass p-5 rounded-3xl space-y-4">
-              <h3 className="font-bold text-sm uppercase text-gray-400">Custom Assets</h3>
-              <div className="flex gap-2">
-                <label className="flex-1 cursor-pointer bg-gray-900 border border-gray-800 rounded-xl p-3 text-center text-sm font-bold text-gray-300">
-                  <span>Font (.ttf)</span><input type="file" accept=".ttf,.otf" className="hidden" onChange={handleFontUpload} />
-                </label>
-                <label className="flex-1 cursor-pointer bg-gray-900 border border-gray-800 rounded-xl p-3 text-center text-sm font-bold text-gray-300">
-                  <span>Music</span><input type="file" accept="audio/*" className="hidden" onChange={(e) => setMusicUrl(URL.createObjectURL(e.target.files[0]))} />
-                </label>
-              </div>
-            </div>
-
-            <button onClick={() => setActiveTab('export')} className="neon-btn w-full py-4 rounded-xl font-bold">Continue to Export</button>
-          </div>
-        )}
-
-        {activeTab === 'export' && (
-          <div className="glass p-8 rounded-3xl text-center space-y-6">
-            <h2 className="text-2xl font-bold">Render Studio</h2>
-            {renderError && <div className="bg-red-500/20 border border-red-500/50 text-red-200 p-4 rounded-xl text-sm text-left">{renderError}</div>}
-            {isRendering ? (
-              <div className="space-y-2">
-                <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
-                </div>
-                <p className="text-xs text-blue-400 font-mono">Rendering... {Math.floor(renderProgress)}%</p>
-                <p className="text-xs text-yellow-400 font-bold mt-2">{renderStatus}</p>
-              </div>
-            ) : (
-              <button onClick={renderVideo} className="neon-btn w-full py-4 rounded-xl font-bold">Render PRO Video</button>
-            )}
-          </div>
-        )}
-
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 glass flex justify-around py-4 z-50">
-        {['dashboard', 'analyze', 'editor', 'export'].map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider ${activeTab === tab ? 'text-purple-400' : 'text-gray-600'}`}>
-            <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${activeTab === tab ? 'bg-purple-500/20' : ''}`}>{tab[0].toUpperCase()}</div>
-            <span>{tab}</span>
-          </button>
-        ))}
-      </nav>
+      {/* Timeline Area */}
+      {videoUrl && (
+        <div className="h-32 bg-[#121215] border-t border-gray-800 flex flex-col relative z-40">
+          <div className="flex justify-between items-center px-4 py-2 border-b border-gray-800 text-xs font-mono text-gray-400">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+          
+          <div className="flex-1 relative overflow-x-auto timeline-scroll" ref={timelineRef}>
+            <div className="h-full relative min-w-full" style={{ width: `${Math.max(100, duration * 5)}%` }}>
+              {/* Waveform Background */}
+              <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjEwMCI+PHBhdGggZD0iTTIgMEwyIDQwTTIgNjBMMiAxMDAiIHN0cm9rZT0iIzY2NiIgc3Ryb2tlLXdpZHRoPSIxIi8+PC9zdmc+')] bg-repeat-x bg-center" />
+              
+              {/* Clips / Cuts */}
+              {cuts.map((c, i) => (
+                <div key={i} className="cut-block" style={{ left: `${(c.start/duration)*100}%`, width: `${((c.end-c.start)/duration)*100}%` }}>
+                  <span className="text-[8px] text-red-400 absolute top-1 left-1 font-bold">CUT</span>
+                </div>
+              ))}
+
+              {/* Zooms */}
+              {zooms.map((z, i) => (
+                <div key={i} className="absolute bottom-0 w-2 h-2 bg-yellow-400 rounded-full" style={{ left: `${(z.time/duration)*100}%` }} title="Zoom" />
+              ))}
+
+              {/* Playhead */}
+              <div className="playhead" style={{ left: `${(currentTime/duration)*100}%` }} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Toolbar */}
+      {videoUrl && (
+        <div className="glass border-t border-gray-800 pb-safe z-50">
+          {/* Tool Panels */}
+          <div className="p-4 h-48 overflow-y-auto">
+            {activeTool === 'cut' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Smart Editing</h3>
+                <button onClick={autoAnalyze} className="w-full bg-gray-800 border border-gray-700 py-3 rounded-xl font-bold text-sm">Auto-Cut Silence</button>
+                <p className="text-xs text-gray-500">Analyzes audio spikes and removes dead space automatically.</p>
+              </div>
+            )}
+
+            {activeTool === 'text' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Add Text</h3>
+                <div className="flex gap-2">
+                  <input type="text" id="newText" placeholder="Type text here..." className="flex-1 bg-gray-900 rounded-lg px-3 text-sm border border-gray-700" />
+                  <button onClick={() => {
+                    const val = document.getElementById('newText').value;
+                    if(val) setTexts([...texts, { start: currentTime, end: currentTime + 3, content: val, color: '#fff', font: 'Montserrat' }]);
+                  }} className="neon-btn px-4 py-2 rounded-lg font-bold text-xs">Add</button>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {texts.map((t, i) => (
+                    <div key={i} className="bg-gray-800 px-3 py-1 rounded text-xs whitespace-nowrap">{t.content} <span onClick={() => setTexts(texts.filter((_, idx) => idx !== i))} className="text-red-400 ml-2 cursor-pointer">×</span></div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeTool === 'style' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">VR Presets</h3>
+                <div className="grid grid-cols-3 gap-2">
+                  <button onClick={() => applyPreset('funny')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">😂 Funny</button>
+                  <button onClick={() => applyPreset('horror')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">👻 Horror</button>
+                  <button onClick={() => applyPreset('action')} className="bg-gray-800 p-2 rounded-lg text-xs font-bold border border-gray-700 hover:bg-gray-700">🔥 Action</button>
+                </div>
+              </div>
+            )}
+
+            {activeTool === 'ai' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wider">AI Director</h3>
+                <div className="flex gap-2">
+                  <input type="text" value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="e.g. Cut 5s to 10s, add red text EPIC..." className="flex-1 bg-gray-900 rounded-lg px-3 text-sm border border-gray-700" />
+                  <button onClick={processAIPrompt} disabled={isAiProcessing} className="neon-btn px-4 py-2 rounded-lg font-bold text-xs">{isAiProcessing ? '...' : 'Run'}</button>
+                </div>
+                <p className="text-xs text-gray-500">Uses Gemini API (Add key in Settings).</p>
+                <input type="password" value={geminiKey} onChange={e => {setGeminiKey(e.target.value); localStorage.setItem('vr_editor_gemini', e.target.value);}} placeholder="Gemini Key" className="w-full bg-black/50 text-xs p-2 rounded border border-gray-800" />
+              </div>
+            )}
+
+            {activeTool === 'audio' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Background Music</h3>
+                <label className="block w-full bg-gray-800 border border-gray-700 py-3 rounded-xl font-bold text-sm text-center cursor-pointer">
+                  {musicUrl ? "Change Music" : "Upload Music"}
+                  <input type="file" accept="audio/*" className="hidden" onChange={(e) => setMusicUrl(URL.createObjectURL(e.target.files[0]))} />
+                </label>
+                {musicUrl && (
+                  <div>
+                    <label className="text-xs text-gray-400">Volume: {Math.round(musicVol*100)}%</label>
+                    <input type="range" min="0" max="1" step="0.1" value={musicVol} onChange={e => setMusicVol(parseFloat(e.target.value))} className="w-full accent-purple-500" />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Tab Bar */}
+          <div className="flex justify-around items-center border-t border-gray-800 pt-2 pb-6 px-2">
+            {['cut', 'text', 'style', 'ai', 'audio'].map(tool => (
+              <button key={tool} onClick={() => setActiveTool(tool)} className={`flex flex-col items-center gap-1 text-[10px] font-bold uppercase ${activeTool === tool ? 'text-purple-400' : 'text-gray-500'}`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${activeTool === tool ? 'bg-purple-500/20' : ''}`}>
+                  {tool === 'cut' ? '✂️' : tool === 'text' ? 'T' : tool === 'style' ? '🎨' : tool === 'ai' ? '🧠' : '🎵'}
+                </div>
+                {tool}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Export Modal */}
+      {isRendering && (
+        <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-6">
+          <div className="w-full max-w-sm space-y-6 text-center">
+            <h2 className="text-2xl font-bold">Rendering...</h2>
+            <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-full bg-blue-500 transition-all" style={{ width: `${renderProgress}%` }}></div>
+            </div>
+            <p className="text-xs text-blue-400 font-mono">{Math.floor(renderProgress)}%</p>
+            <p className="text-xs text-yellow-400">{renderStatus}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
